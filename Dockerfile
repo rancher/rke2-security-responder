@@ -19,6 +19,7 @@ RUN go mod download
 
 # Copy source code
 COPY main.go ./
+COPY telemetry/ ./telemetry/
 
 # Build with hardening flags
 RUN CGO_ENABLED=0 \
@@ -28,7 +29,7 @@ RUN CGO_ENABLED=0 \
     -ldflags "-s -w -X main.Version=${TAG}" \
     -trimpath \
     -o security-responder \
-    main.go
+    .
 
 # Final stage - using scratch for minimal image size
 FROM scratch
