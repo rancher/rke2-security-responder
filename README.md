@@ -21,6 +21,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - Operating system, kernel version, architecture
   - SELinux status
   - GPU node count, vendor, and operator (if present)
+  - Rancher Manager status, version, and install UUID (if managed)
 - Sends data to a configurable endpoint
 - Fails gracefully in disconnected environments
 - Minimal resource overhead
@@ -50,7 +51,10 @@ Example payload structure:
     "gpu-nodes": 2,
     "gpu-vendor": "nvidia",
     "gpu-operator": "nvidia-gpu-operator",
-    "gpu-operator-version": "v25.10.1"
+    "gpu-operator-version": "v25.10.1",
+    "rancher-managed": true,
+    "rancher-version": "v2.9.3",
+    "rancher-install-uuid": "53741f60-f208-48fc-ae81-8a969510a598"
   }
 }
 ```

@@ -140,6 +140,17 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 	}
 	slog.Debug("detected GPU operator", "operator", gpuOperator, "version", gpuOperatorVersion)
 
+	slog.Debug("detecting Rancher Manager")
+	rancherManaged, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset)
+	data.ExtraFieldInfo["rancher-managed"] = rancherManaged
+	if rancherVersion != "" {
+		data.ExtraFieldInfo["rancher-version"] = rancherVersion
+	}
+	if rancherInstallUUID != "" {
+		data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
+	}
+	slog.Debug("detected Rancher", "managed", rancherManaged, "version", rancherVersion, "installUUID", rancherInstallUUID)
+
 	return data, nil
 }
 
@@ -323,4 +334,28 @@ func detectGPUOperator(ctx context.Context, clientset *kubernetes.Clientset) (st
 	}
 
 	return "none", ""
+}
+
+func detectRancherManager(ctx context.Context, clientset *kubernetes.Clientset) (managed bool, version, installUUID string) {
+	_, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{})
+	if err != nil {
+		return false, "", ""
+	}
+
+	deploy, err := clientset.AppsV1().Deployments("cattle-system").Get(ctx, "cattle-cluster-agent", metav1.GetOptions{})
+	if err != nil {
+		return true, "", ""
+	}
+
+	if len(deploy.Spec.Template.Spec.Containers) > 0 {
+		container := deploy.Spec.Template.Spec.Containers[0]
+		version = extractImageVersion(container.Image)
+		for _, env := range container.Env {
+			if env.Name == "CATTLE_INSTALL_UUID" && env.Value != "" {
+				installUUID = env.Value
+				break
+			}
+		}
+	}
+	return true, version, installUUID
 }
