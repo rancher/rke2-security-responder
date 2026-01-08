@@ -30,3 +30,14 @@ go.work.sum
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Build artifacts
+security-responder
+rke2-security-responder
+dist/
+bin/
+
+AGENT.md
+CLAUDE.md
+*~
+

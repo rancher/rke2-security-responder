@@ -1,0 +1,60 @@
+.PHONY: all build test clean lint helm-lint docker-build install-hooks
+
+BINARY_NAME=security-responder
+DOCKER_REPO=rancher/rke2-security-responder
+VERSION?=v0.1.0
+ARCH?=amd64
+
+all: build
+
+build:
+	CGO_ENABLED=0 go build \
+		-ldflags "-s -w -X main.Version=$(VERSION)" \
+		-trimpath \
+		-o $(BINARY_NAME) \
+		main.go
+
+test:
+	go test -v ./...
+
+clean:
+	rm -f $(BINARY_NAME)
+	rm -rf dist/
+
+lint:
+	golangci-lint run
+
+helm-lint:
+	helm lint charts/rke2-security-responder
+
+helm-template:
+	helm template rke2-security-responder charts/rke2-security-responder \
+		--namespace kube-system
+
+docker-build:
+	docker buildx build \
+		--platform linux/$(ARCH) \
+		--build-arg BUILDARCH=$(ARCH) \
+		--build-arg TAG=$(VERSION) \
+		--load \
+		-t $(DOCKER_REPO):$(VERSION)-$(ARCH) \
+		.
+
+docker-build-multi:
+	docker buildx build \
+		--platform linux/amd64,linux/arm64 \
+		--build-arg TAG=$(VERSION) \
+		-t $(DOCKER_REPO):$(VERSION) \
+		.
+
+fmt:
+	go fmt ./...
+
+vet:
+	go vet ./...
+
+install-hooks:
+	cp scripts/pre-commit .git/hooks/pre-commit
+	chmod +x .git/hooks/pre-commit
+	@echo "Pre-commit hook installed"
+

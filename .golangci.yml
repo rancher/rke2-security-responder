@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - unused
+    - gosec
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+linters-settings:
+  gosec:
+    excludes:
+      - G304
+
+issues:
+  exclude-dirs:
+    - vendor
