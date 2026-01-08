@@ -9,7 +9,8 @@ RUN apk --no-cache add \
     bash \
     git \
     tzdata \
-    ca-certificates
+    ca-certificates \
+    upx
 
 WORKDIR /workspace
 
@@ -29,7 +30,8 @@ RUN CGO_ENABLED=0 \
     -ldflags "-s -w -X main.Version=${TAG}" \
     -trimpath \
     -o security-responder \
-    .
+    . && \
+    upx security-responder
 
 # Final stage - using scratch for minimal image size
 FROM scratch

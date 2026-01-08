@@ -1,4 +1,4 @@
-.PHONY: all build test test-unit test-e2e-kind test-e2e-rke2 test-all clean lint helm-lint docker-build install-hooks
+.PHONY: all build build-compressed test test-unit test-e2e-kind test-e2e-rke2 test-all clean lint helm-lint docker-build install-hooks
 
 BINARY_NAME=bin/security-responder
 DOCKER_REPO=rancher/rke2-security-responder
@@ -13,6 +13,9 @@ build:
 		-trimpath \
 		-o $(BINARY_NAME) \
 		main.go
+
+build-compressed: build
+	upx $(BINARY_NAME)
 
 test:
 	go test -v ./...
