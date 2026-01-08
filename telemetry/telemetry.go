@@ -34,19 +34,24 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 		ExtraFieldInfo: make(map[string]interface{}),
 	}
 
+	slog.Debug("collecting server version")
 	versionInfo, err := clientset.Discovery().ServerVersion()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server version: %w", err)
 	}
 	data.AppVersion = versionInfo.GitVersion
 	data.ExtraTagInfo["kubernetesVersion"] = versionInfo.GitVersion
+	slog.Debug("collected version", "version", versionInfo.GitVersion)
 
+	slog.Debug("collecting cluster UUID from kube-system namespace")
 	namespace, err := clientset.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get kube-system namespace: %w", err)
 	}
 	data.ExtraTagInfo["clusteruuid"] = string(namespace.UID)
+	slog.Debug("collected cluster UUID", "uuid", namespace.UID)
 
+	slog.Debug("collecting node information")
 	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
@@ -73,20 +78,25 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 	data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
 	data.ExtraFieldInfo["os"] = osInfo
 	data.ExtraFieldInfo["selinux"] = selinuxInfo
+	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osInfo, "selinux", selinuxInfo)
 
+	slog.Debug("detecting CNI plugin")
 	cniPlugin, err := detectCNIPlugin(ctx, clientset)
 	if err != nil {
 		slog.Warn("failed to detect CNI plugin", "error", err)
 		cniPlugin = "unknown"
 	}
 	data.ExtraFieldInfo["cni-plugin"] = cniPlugin
+	slog.Debug("detected CNI", "plugin", cniPlugin)
 
+	slog.Debug("detecting ingress controller")
 	ingressController, err := detectIngressController(ctx, clientset)
 	if err != nil {
 		slog.Warn("failed to detect ingress controller", "error", err)
 		ingressController = "unknown"
 	}
 	data.ExtraFieldInfo["ingress-controller"] = ingressController
+	slog.Debug("detected ingress", "controller", ingressController)
 
 	return data, nil
 }
@@ -94,10 +104,11 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 func Send(ctx context.Context, data *Data, endpoint string) error {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to marshal telemetry data: %w", err)
+		return fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	slog.Info("sending telemetry", "endpoint", endpoint)
+	slog.Info("sending data", "endpoint", endpoint)
+	slog.Debug("request payload", "size", len(jsonData))
 
 	client := &http.Client{Timeout: defaultTimeout}
 
@@ -129,7 +140,8 @@ func Send(ctx context.Context, data *Data, endpoint string) error {
 			continue
 		}
 
-		slog.Info("telemetry sent", "attempt", attempt)
+		slog.Debug("response received", "status", resp.StatusCode)
+		slog.Info("data sent", "attempt", attempt)
 		return nil
 	}
 
