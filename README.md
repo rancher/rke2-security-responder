@@ -113,6 +113,34 @@ Build multi-architecture images:
 make docker-build-multi VERSION=v0.1.0
 ```
 
+### Development Builds
+
+Builds with a version string containing "dev" or "test" (case-insensitive) automatically set `extraFieldInfo.dev: true` in the telemetry payload. This allows server-side filtering of test/development data.
+
+The dev flag can also be forced via environment variable:
+```bash
+SECURITY_RESPONDER_DEV=true
+```
+
+| Condition | `dev` field |
+|-----------|-------------|
+| Version contains "dev" | `true` |
+| Version contains "test" | `true` |
+| `SECURITY_RESPONDER_DEV=true` | `true` |
+| None of the above | absent |
+
+Example:
+```bash
+# Development build (dev flag set via version)
+make build VERSION=dev
+
+# Release build with dev flag forced via env
+SECURITY_RESPONDER_DEV=true ./bin/security-responder
+
+# Release build (no dev flag)
+make build VERSION=v0.1.0
+```
+
 ### Testing the Helm Chart
 
 Lint the chart:

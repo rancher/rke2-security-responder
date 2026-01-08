@@ -114,6 +114,38 @@ jobs:
       with:
         cluster_name: e2e-test
 
+    - name: Deploy mock responder endpoint
+      run: |
+        kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: mock-responder
+          namespace: kube-system
+          labels:
+            app: mock-responder
+        spec:
+          containers:
+          - name: mock
+            image: hashicorp/http-echo
+            args: ["-text={\"versions\":[{\"name\":\"v1.30.1\",\"releaseDate\":\"2024-01-01\"}],\"requestIntervalInMinutes\":480}"]
+            ports:
+            - containerPort: 5678
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: mock-responder
+          namespace: kube-system
+        spec:
+          selector:
+            app: mock-responder
+          ports:
+          - port: 80
+            targetPort: 5678
+        EOF
+        kubectl wait --for=condition=ready pod/mock-responder -n kube-system --timeout=60s
+
     - name: Build docker image
       run: |
         docker build -t rke2-security-responder:e2e \
@@ -123,13 +155,13 @@ jobs:
     - name: Load image into kind
       run: kind load docker-image rke2-security-responder:e2e --name e2e-test
 
-    - name: Install helm chart (debug mode)
+    - name: Install helm chart (with mock endpoint)
       run: |
         helm upgrade --install rke2-security-responder ./charts/rke2-security-responder \
           --namespace kube-system \
           --set image.repository=rke2-security-responder \
           --set image.tag=e2e \
-          --set extraArgs="{--debug}" \
+          --set check.endpoint="http://mock-responder.kube-system.svc.cluster.local:80" \
           --wait
 
     - name: Create and run test job
@@ -137,22 +169,54 @@ jobs:
         kubectl create job --from=cronjob/rke2-security-responder e2e-test-run -n kube-system
         kubectl wait --for=condition=complete job/e2e-test-run -n kube-system --timeout=60s
 
-    - name: Verify telemetry collection
+    - name: Verify telemetry send
       run: |
         POD_NAME=$(kubectl get pods -n kube-system -l job-name=e2e-test-run -o jsonpath='{.items[0].metadata.name}')
         kubectl logs -n kube-system "$POD_NAME"
 
         LOGS=$(kubectl logs -n kube-system "$POD_NAME")
 
-        if ! echo "$LOGS" | grep -q "debug mode: skipping send"; then
-          echo "ERROR: Expected debug mode message not found"
+        if ! echo "$LOGS" | grep -q "data sent"; then
+          echo "ERROR: Expected 'data sent' message not found"
           exit 1
         fi
 
-        if ! echo "$LOGS" | grep -q "serverNodeCount"; then
-          echo "ERROR: Expected serverNodeCount in payload not found"
+        if ! echo "$LOGS" | grep -q "response received"; then
+          echo "ERROR: Expected 'response received' message not found"
           exit 1
         fi
 
-        echo "E2E test passed"
+        echo "E2E test with mock endpoint passed"
+
+    - name: Test real endpoint (dev flag forced)
+      continue-on-error: true  # Real endpoint may not be available yet
+      run: |
+        # Clean up previous test job
+        kubectl delete job e2e-test-run -n kube-system --ignore-not-found
+
+        # Reconfigure to use real endpoint with dev flag forced
+        helm upgrade rke2-security-responder ./charts/rke2-security-responder \
+          --namespace kube-system \
+          --set image.repository=rke2-security-responder \
+          --set image.tag=e2e \
+          --set check.endpoint="https://security-responder.rke2.io/v1/check" \
+          --set extraEnv[0].name=SECURITY_RESPONDER_DEV \
+          --set extraEnv[0].value="true" \
+          --wait
+
+        # Run test against real endpoint
+        kubectl create job --from=cronjob/rke2-security-responder e2e-real-endpoint -n kube-system
+        kubectl wait --for=condition=complete job/e2e-real-endpoint -n kube-system --timeout=120s
+
+        POD_NAME=$(kubectl get pods -n kube-system -l job-name=e2e-real-endpoint -o jsonpath='{.items[0].metadata.name}')
+        kubectl logs -n kube-system "$POD_NAME"
+
+        LOGS=$(kubectl logs -n kube-system "$POD_NAME")
+
+        if echo "$LOGS" | grep -q "data sent"; then
+          echo "Real endpoint test passed"
+        else
+          echo "Real endpoint test failed (endpoint may not be available yet)"
+          exit 1
+        fi
 

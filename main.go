@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/rancher/rke2-security-responder/telemetry"
 	"k8s.io/client-go/kubernetes"
@@ -56,6 +57,13 @@ func run() error {
 	data, err := telemetry.Collect(ctx, clientset)
 	if err != nil {
 		return fmt.Errorf("collect data: %w", err)
+	}
+
+	// Mark dev/test builds for server-side filtering
+	lowerVersion := strings.ToLower(Version)
+	if strings.Contains(lowerVersion, "dev") || strings.Contains(lowerVersion, "test") ||
+		os.Getenv("SECURITY_RESPONDER_DEV") == "true" {
+		data.ExtraFieldInfo["dev"] = true
 	}
 
 	if *debug {

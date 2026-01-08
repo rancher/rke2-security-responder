@@ -39,11 +39,18 @@ spec:
             - name: security-responder
               image: {{ include "rke2-security-responder.image" . }}
               imagePullPolicy: {{ .Values.image.pullPolicy }}
+              {{- with .Values.extraArgs }}
+              args:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
               env:
                 - name: SECURITY_RESPONDER_ENDPOINT
                   value: {{ .Values.check.endpoint | quote }}
                 - name: DISABLE_SECURITY_RESPONDER_CHECK
                   value: {{ .Values.check.disabled | quote }}
+                {{- with .Values.extraEnv }}
+                {{- toYaml . | nindent 16 }}
+                {{- end }}
               resources:
                 {{- toYaml .Values.resources | nindent 16 }}
               securityContext:

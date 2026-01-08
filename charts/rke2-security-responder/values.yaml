@@ -52,3 +52,11 @@ serviceAccountName: rke2-security-responder
 
 # Priority class
 priorityClassName: "system-cluster-critical"
+
+# Extra arguments to pass to the binary
+extraArgs: []
+
+# Extra environment variables
+extraEnv: []
+# - name: SECURITY_RESPONDER_DEV
+#   value: "true"
