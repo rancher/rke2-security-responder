@@ -1,10 +1,10 @@
 # rke2-security-responder
 
-RKE2 component for in-cluster CVE/security notifications and telemetry.
+RKE2 component for in-cluster security metadata collection and CVE notifications.
 
 ## Overview
 
-The RKE2 Security Responder is a Kubernetes component that collects non-personally identifiable cluster metadata and optionally sends it to a telemetry endpoint. This helps RKE2 maintainers understand real-world adoption patterns and helps users stay informed about security updates.
+The RKE2 Security Responder is a Kubernetes component that collects non-personally identifiable cluster metadata and sends it to a security check endpoint. This helps RKE2 maintainers understand deployment patterns relevant to security advisories and helps users stay informed about security updates.
 
 ## Architecture
 
@@ -18,9 +18,10 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - Node counts (control plane vs agent nodes)
   - CNI plugin in use
   - Ingress controller in use
-  - Operating system information
+  - Operating system, kernel version, architecture
   - SELinux status
-- Sends data to a configurable telemetry endpoint
+  - GPU node count, vendor, and operator (if present)
+- Sends data to a configurable endpoint
 - Fails gracefully in disconnected environments
 - Minimal resource overhead
 
@@ -30,18 +31,23 @@ Example payload structure:
 
 ```json
 {
-  "appVersion": "v1.31.6+rke2r1",
+  "appVersion": "v1.32.2+rke2r1",
   "extraTagInfo": {
-    "kubernetesVersion": "v1.31.6",
+    "kubernetesVersion": "v1.32.2",
     "clusteruuid": "53741f60-f208-48fc-ae81-8a969510a598"
   },
   "extraFieldInfo": {
     "serverNodeCount": 3,
     "agentNodeCount": 2,
-    "cni-plugin": "flannel",
+    "os": "SLE Micro 6.1",
+    "kernel": "6.4.0-150600.23.47-default",
+    "arch": "amd64",
+    "selinux": "enabled",
+    "cni-plugin": "cilium",
     "ingress-controller": "rke2-ingress-nginx",
-    "os": "ubuntu",
-    "selinux": "enabled"
+    "gpu-nodes": 2,
+    "gpu-vendor": "nvidia",
+    "gpu-operator": "nvidia-gpu-operator"
   }
 }
 ```
@@ -52,7 +58,7 @@ The `clusteruuid` is completely random (the UUID of the `kube-system` namespace)
 
 ### Disabling the Security Responder
 
-To disable telemetry collection, add the following to your RKE2 configuration:
+To disable the security responder, add the following to your RKE2 configuration:
 
 ```yaml
 # /etc/rancher/rke2/config.yaml

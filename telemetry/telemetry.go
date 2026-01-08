@@ -58,7 +58,7 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 	}
 
 	var serverNodeCount, agentNodeCount, gpuNodeCount int
-	var osInfo, selinuxInfo, gpuVendor string
+	var osImage, kernelVersion, arch, selinuxInfo, gpuVendor string
 
 	gpuResources := []corev1.ResourceName{"nvidia.com/gpu", "amd.com/gpu", "intel.com/gpu"}
 	gpuVendorMap := map[corev1.ResourceName]string{
@@ -73,8 +73,10 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 		} else {
 			agentNodeCount++
 		}
-		if osInfo == "" {
-			osInfo = node.Status.NodeInfo.OSImage
+		if osImage == "" {
+			osImage = node.Status.NodeInfo.OSImage
+			kernelVersion = node.Status.NodeInfo.KernelVersion
+			arch = node.Status.NodeInfo.Architecture
 		}
 		if selinuxInfo == "" {
 			selinuxInfo = getSELinuxStatus(&node)
@@ -94,13 +96,15 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 
 	data.ExtraFieldInfo["serverNodeCount"] = serverNodeCount
 	data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
-	data.ExtraFieldInfo["os"] = osInfo
+	data.ExtraFieldInfo["os"] = osImage
+	data.ExtraFieldInfo["kernel"] = kernelVersion
+	data.ExtraFieldInfo["arch"] = arch
 	data.ExtraFieldInfo["selinux"] = selinuxInfo
 	data.ExtraFieldInfo["gpu-nodes"] = gpuNodeCount
 	if gpuVendor != "" {
 		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
 	}
-	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osInfo, "selinux", selinuxInfo, "gpu-nodes", gpuNodeCount)
+	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osImage, "kernel", kernelVersion, "arch", arch, "selinux", selinuxInfo, "gpu-nodes", gpuNodeCount)
 
 	slog.Debug("detecting CNI plugin")
 	cniPlugin, err := detectCNIPlugin(ctx, clientset)
