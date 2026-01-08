@@ -125,7 +125,7 @@ func TestGetSELinuxStatus(t *testing.T) {
 }
 
 func TestCollect_BasicCluster(t *testing.T) {
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		&corev1.Namespace{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "kube-system",
@@ -205,7 +205,7 @@ func TestCollect_CNIDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset(
+			clientset := fake.NewClientset(
 				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
 				&corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
@@ -248,7 +248,7 @@ func TestCollect_IngressDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			clientset := fake.NewSimpleClientset(
+			clientset := fake.NewClientset(
 				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
 				&corev1.Node{
 					ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
@@ -279,7 +279,7 @@ func TestCollect_IngressDetection(t *testing.T) {
 }
 
 func TestCollect_GPUDetection(t *testing.T) {
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
 		&corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "gpu-node-1"},
@@ -312,7 +312,7 @@ func TestCollect_GPUDetection(t *testing.T) {
 }
 
 func TestCollect_RancherManaged(t *testing.T) {
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}},
 		&corev1.Node{
@@ -353,7 +353,7 @@ func TestCollect_RancherManaged(t *testing.T) {
 }
 
 func TestCollect_MissingKubeSystem(t *testing.T) {
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 
 	_, err := Collect(context.Background(), clientset)
 	if err == nil {
@@ -459,7 +459,7 @@ func TestSend_MalformedResponse(t *testing.T) {
 }
 
 func TestCollect_GPUOperatorDetection(t *testing.T) {
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "gpu-operator"}},
 		&corev1.Node{
@@ -489,7 +489,7 @@ func TestCollect_GPUOperatorDetection(t *testing.T) {
 }
 
 func TestCollect_IngressAsDaemonSet(t *testing.T) {
-	clientset := fake.NewSimpleClientset(
+	clientset := fake.NewClientset(
 		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
 		&corev1.Node{
 			ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
