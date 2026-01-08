@@ -7,17 +7,15 @@ linters:
     - staticcheck
     - unused
     - gosec
+  settings:
+    gosec:
+      excludes:
+        - G304
+  exclusions:
+    paths:
+      - vendor
 
 formatters:
   enable:
     - gofmt
     - goimports
-
-linters-settings:
-  gosec:
-    excludes:
-      - G304
-
-issues:
-  exclude-dirs:
-    - vendor
