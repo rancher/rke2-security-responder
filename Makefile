@@ -2,7 +2,7 @@
 
 BINARY_NAME=bin/security-responder
 DOCKER_REPO=rancher/rke2-security-responder
-VERSION?=v0.1.0
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 ARCH?=amd64
 
 all: build

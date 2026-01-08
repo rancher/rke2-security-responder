@@ -113,32 +113,43 @@ Build multi-architecture images:
 make docker-build-multi VERSION=v0.1.0
 ```
 
+### Versioning
+
+The version is automatically derived from git tags using `git describe --tags --always --dirty`:
+
+| Git State | Version Example | Notes |
+|-----------|-----------------|-------|
+| Clean tag | `v0.1.0` | Exact tag match |
+| Commits after tag | `v0.1.0-5-gabcdef0` | 5 commits after v0.1.0 |
+| Uncommitted changes | `v0.1.0-dirty` | Working tree modified |
+| No tags | `abcdef0` | Short commit hash |
+| Fallback | `dev` | Git not available |
+
+Override with: `make build VERSION=v1.0.0`
+
 ### Development Builds
 
-Builds with a version string containing "dev" or "test" (case-insensitive) automatically set `extraFieldInfo.dev: true` in the telemetry payload. This allows server-side filtering of test/development data.
-
-The dev flag can also be forced via environment variable:
-```bash
-SECURITY_RESPONDER_DEV=true
-```
+Non-release versions automatically set `extraFieldInfo.dev: true` for server-side filtering. A release version is a clean semver tag like `v1.2.3`, `v1.2.3-rc1`, or `v1.2.3+rke2r1`.
 
 | Condition | `dev` field |
 |-----------|-------------|
-| Version contains "dev" | `true` |
-| Version contains "test" | `true` |
-| `SECURITY_RESPONDER_DEV=true` | `true` |
-| None of the above | absent |
+| Clean release tag (`v1.2.3`) | absent |
+| Commits after tag (`v1.2.3-5-gabcdef`) | `true` |
+| Dirty working tree (`v1.2.3-dirty`) | `true` |
+| No tag (commit hash only) | `true` |
+| Version contains "dev" or "test" | `true` |
+| `SECURITY_RESPONDER_DEV=true` env | `true` |
 
 Example:
 ```bash
-# Development build (dev flag set via version)
-make build VERSION=dev
+# Tagged release (no dev flag)
+git tag v0.1.0 && make build
 
-# Release build with dev flag forced via env
+# Development build (dev flag set automatically)
+make build  # Uses git describe, dirty tree = dev
+
+# Force dev flag via env
 SECURITY_RESPONDER_DEV=true ./bin/security-responder
-
-# Release build (no dev flag)
-make build VERSION=v0.1.0
 ```
 
 ### Testing the Helm Chart

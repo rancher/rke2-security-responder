@@ -2,7 +2,7 @@
 FROM rancher/hardened-build-base:v1.25.5b1 AS builder
 
 ARG BUILDARCH
-ARG TAG=v0.1.0
+ARG TAG=dev
 ENV ARCH=${BUILDARCH:-amd64}
 
 RUN apk --no-cache add \
