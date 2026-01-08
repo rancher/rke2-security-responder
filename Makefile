@@ -1,6 +1,6 @@
 .PHONY: all build test clean lint helm-lint docker-build install-hooks
 
-BINARY_NAME=security-responder
+BINARY_NAME=bin/security-responder
 DOCKER_REPO=rancher/rke2-security-responder
 VERSION?=v0.1.0
 ARCH?=amd64
@@ -18,8 +18,7 @@ test:
 	go test -v ./...
 
 clean:
-	rm -f $(BINARY_NAME)
-	rm -rf dist/
+	rm -rf bin/ dist/
 
 lint:
 	golangci-lint run

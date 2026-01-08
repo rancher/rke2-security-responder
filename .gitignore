@@ -32,12 +32,10 @@ go.work.sum
 # .vscode/
 
 # Build artifacts
-security-responder
-rke2-security-responder
-dist/
 bin/
+dist/
 
 AGENT.md
 CLAUDE.md
+.claude
 *~
-
