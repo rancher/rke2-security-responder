@@ -57,8 +57,15 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
 	}
 
-	var serverNodeCount, agentNodeCount int
-	var osInfo, selinuxInfo string
+	var serverNodeCount, agentNodeCount, gpuNodeCount int
+	var osInfo, selinuxInfo, gpuVendor string
+
+	gpuResources := []corev1.ResourceName{"nvidia.com/gpu", "amd.com/gpu", "intel.com/gpu"}
+	gpuVendorMap := map[corev1.ResourceName]string{
+		"nvidia.com/gpu": "nvidia",
+		"amd.com/gpu":    "amd",
+		"intel.com/gpu":  "intel",
+	}
 
 	for _, node := range nodes.Items {
 		if isControlPlaneNode(&node) {
@@ -72,13 +79,28 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 		if selinuxInfo == "" {
 			selinuxInfo = getSELinuxStatus(&node)
 		}
+		for _, res := range gpuResources {
+			if qty, ok := node.Status.Allocatable[res]; ok {
+				if count, _ := qty.AsInt64(); count > 0 {
+					gpuNodeCount++
+					if gpuVendor == "" {
+						gpuVendor = gpuVendorMap[res]
+					}
+					break
+				}
+			}
+		}
 	}
 
 	data.ExtraFieldInfo["serverNodeCount"] = serverNodeCount
 	data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
 	data.ExtraFieldInfo["os"] = osInfo
 	data.ExtraFieldInfo["selinux"] = selinuxInfo
-	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osInfo, "selinux", selinuxInfo)
+	data.ExtraFieldInfo["gpu-nodes"] = gpuNodeCount
+	if gpuVendor != "" {
+		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
+	}
+	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osInfo, "selinux", selinuxInfo, "gpu-nodes", gpuNodeCount)
 
 	slog.Debug("detecting CNI plugin")
 	cniPlugin, err := detectCNIPlugin(ctx, clientset)
@@ -97,6 +119,13 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 	}
 	data.ExtraFieldInfo["ingress-controller"] = ingressController
 	slog.Debug("detected ingress", "controller", ingressController)
+
+	slog.Debug("detecting GPU operator")
+	gpuOperator := detectGPUOperator(ctx, clientset)
+	if gpuOperator != "none" {
+		data.ExtraFieldInfo["gpu-operator"] = gpuOperator
+	}
+	slog.Debug("detected GPU operator", "operator", gpuOperator)
 
 	return data, nil
 }
@@ -222,4 +251,27 @@ func detectIngressController(ctx context.Context, clientset *kubernetes.Clientse
 	}
 
 	return "none", nil
+}
+
+func detectGPUOperator(ctx context.Context, clientset *kubernetes.Clientset) string {
+	gpuNamespaces := map[string]string{
+		"gpu-operator":              "nvidia-gpu-operator",
+		"kube-amd-gpu":              "amd-gpu-operator",
+		"inteldeviceplugins-system": "intel-device-plugins",
+	}
+
+	for ns, operator := range gpuNamespaces {
+		daemonSets, err := clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			continue
+		}
+		for _, ds := range daemonSets.Items {
+			name := strings.ToLower(ds.Name)
+			if strings.Contains(name, "device-plugin") || strings.Contains(name, "driver") {
+				return operator
+			}
+		}
+	}
+
+	return "none"
 }
