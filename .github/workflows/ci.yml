@@ -97,3 +97,62 @@ jobs:
       run: |
         docker images rke2-security-responder:test-${{ matrix.arch }} --format "{{.Repository}}:{{.Tag}} - {{.Size}}"
 
+  e2e:
+    name: E2E Tests (kind)
+    runs-on: ubuntu-latest
+    needs: [build, helm]
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.14.0'
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: e2e-test
+
+    - name: Build docker image
+      run: |
+        docker build -t rke2-security-responder:e2e \
+          --build-arg TAG=e2e-test \
+          .
+
+    - name: Load image into kind
+      run: kind load docker-image rke2-security-responder:e2e --name e2e-test
+
+    - name: Install helm chart (debug mode)
+      run: |
+        helm upgrade --install rke2-security-responder ./charts/rke2-security-responder \
+          --namespace kube-system \
+          --set image.repository=rke2-security-responder \
+          --set image.tag=e2e \
+          --set extraArgs="{--debug}" \
+          --wait
+
+    - name: Create and run test job
+      run: |
+        kubectl create job --from=cronjob/rke2-security-responder e2e-test-run -n kube-system
+        kubectl wait --for=condition=complete job/e2e-test-run -n kube-system --timeout=60s
+
+    - name: Verify telemetry collection
+      run: |
+        POD_NAME=$(kubectl get pods -n kube-system -l job-name=e2e-test-run -o jsonpath='{.items[0].metadata.name}')
+        kubectl logs -n kube-system "$POD_NAME"
+
+        LOGS=$(kubectl logs -n kube-system "$POD_NAME")
+
+        if ! echo "$LOGS" | grep -q "debug mode: skipping send"; then
+          echo "ERROR: Expected debug mode message not found"
+          exit 1
+        fi
+
+        if ! echo "$LOGS" | grep -q "serverNodeCount"; then
+          echo "ERROR: Expected serverNodeCount in payload not found"
+          exit 1
+        fi
+
+        echo "E2E test passed"
+

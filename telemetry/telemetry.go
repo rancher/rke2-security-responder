@@ -42,7 +42,7 @@ type Version struct {
 	ExtraInfo            map[string]string `json:"extraInfo,omitempty"`
 }
 
-func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error) {
+func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error) {
 	data := &Data{
 		ExtraTagInfo:   make(map[string]string),
 		ExtraFieldInfo: make(map[string]interface{}),
@@ -266,7 +266,7 @@ func extractImageVersion(image string) string {
 	return ""
 }
 
-func detectCNIPlugin(ctx context.Context, clientset *kubernetes.Clientset) (string, string, error) {
+func detectCNIPlugin(ctx context.Context, clientset kubernetes.Interface) (string, string, error) {
 	daemonSets, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return "", "", err
@@ -296,7 +296,7 @@ func detectCNIPlugin(ctx context.Context, clientset *kubernetes.Clientset) (stri
 	return "unknown", "", nil
 }
 
-func detectIngressController(ctx context.Context, clientset *kubernetes.Clientset) (string, string, error) {
+func detectIngressController(ctx context.Context, clientset kubernetes.Interface) (string, string, error) {
 	deployments, err := clientset.AppsV1().Deployments("kube-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return "", "", err
@@ -344,7 +344,7 @@ func detectIngressController(ctx context.Context, clientset *kubernetes.Clientse
 	return "none", "", nil
 }
 
-func detectGPUOperator(ctx context.Context, clientset *kubernetes.Clientset) (string, string) {
+func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (string, string) {
 	gpuNamespaces := map[string]string{
 		"gpu-operator":              "nvidia-gpu-operator",
 		"kube-amd-gpu":              "amd-gpu-operator",
@@ -371,7 +371,7 @@ func detectGPUOperator(ctx context.Context, clientset *kubernetes.Clientset) (st
 	return "none", ""
 }
 
-func detectRancherManager(ctx context.Context, clientset *kubernetes.Clientset) (managed bool, version, installUUID string) {
+func detectRancherManager(ctx context.Context, clientset kubernetes.Interface) (managed bool, version, installUUID string) {
 	_, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{})
 	if err != nil {
 		return false, "", ""

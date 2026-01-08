@@ -1,4 +1,4 @@
-.PHONY: all build test clean lint helm-lint docker-build install-hooks
+.PHONY: all build test test-unit test-e2e-kind test-e2e-rke2 test-all clean lint helm-lint docker-build install-hooks
 
 BINARY_NAME=bin/security-responder
 DOCKER_REPO=rancher/rke2-security-responder
@@ -16,6 +16,17 @@ build:
 
 test:
 	go test -v ./...
+
+test-unit:
+	go test -v -race ./...
+
+test-e2e-kind:
+	./scripts/e2e-kind.sh
+
+test-e2e-rke2:
+	./scripts/e2e-rke2.sh
+
+test-all: test-unit test-e2e-kind
 
 clean:
 	rm -rf bin/ dist/
