@@ -136,6 +136,69 @@ helm install rke2-security-responder charts/rke2-security-responder \
   --create-namespace
 ```
 
+### Testing
+
+#### GitHub Actions CI
+
+The CI pipeline (`.github/workflows/ci.yml`) runs automatically on push/PR to main:
+
+| Job | Description |
+|-----|-------------|
+| **Build and Test** | Compiles Go code, runs unit tests, `go vet`, format check |
+| **Lint** | Runs `golangci-lint` with errcheck, govet, staticcheck, gosec |
+| **Helm Chart Lint** | Validates Helm chart syntax and templates |
+| **Docker Build** | Builds container images for amd64 and arm64 |
+| **E2E Tests** | Deploys to a kind cluster and validates telemetry collection |
+
+#### Local Testing
+
+Three Makefile targets for different test scopes:
+
+| Target | Description | Prerequisites |
+|--------|-------------|---------------|
+| `make test-unit` | Unit tests with race detector (~12s) | Go 1.22+ |
+| `make test-e2e-kind` | E2E tests using kind cluster | Go, Docker, kind, helm, kubectl |
+| `make test-e2e-rke2` | E2E tests using RKE2-in-Docker | Go, Docker (privileged), helm, kubectl |
+
+**Unit tests** (`make test-unit`):
+- Tests telemetry collection logic using a fake Kubernetes clientset
+- Tests HTTP endpoint communication using `httptest` servers
+- Tests helper functions (image version extraction, node role detection, SELinux status)
+- No cluster or network access required
+
+**kind E2E** (`make test-e2e-kind`):
+- Creates a disposable kind cluster
+- Builds and loads the container image
+- Deploys via Helm in debug mode (collects but doesn't send)
+- Validates that telemetry payload contains expected fields
+- Automatically cleans up the cluster on exit
+- Suitable for CI environments
+
+**RKE2 E2E** (`make test-e2e-rke2`):
+- Runs an actual RKE2 server in a privileged Docker container
+- Tests detection of RKE2-specific components (Canal CNI, rke2-ingress-nginx)
+- More resource-intensive; intended for local validation
+- Requires privileged Docker access (`--privileged`)
+- Not run in CI due to resource requirements
+
+#### Running Tests
+
+```bash
+# Unit tests only (fast, no dependencies beyond Go)
+make test-unit
+
+# Full local validation with kind
+make test-all
+
+# RKE2-specific detection testing (requires privileged Docker)
+make test-e2e-rke2
+
+# Individual CI-style checks
+make vet
+make lint
+make helm-lint
+```
+
 ## License
 
 Apache 2.0 License. See [LICENSE](LICENSE) for full text.
