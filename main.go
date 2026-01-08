@@ -69,7 +69,7 @@ func run() error {
 		endpoint = telemetry.DefaultEndpoint
 	}
 
-	if err := telemetry.Send(ctx, data, endpoint); err != nil {
+	if _, err := telemetry.Send(ctx, data, endpoint); err != nil {
 		slog.Warn("failed to send (expected in disconnected environments)", "error", err)
 	}
 

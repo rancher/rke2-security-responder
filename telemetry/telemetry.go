@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -26,6 +27,19 @@ type Data struct {
 	AppVersion     string                 `json:"appVersion"`
 	ExtraTagInfo   map[string]string      `json:"extraTagInfo"`
 	ExtraFieldInfo map[string]interface{} `json:"extraFieldInfo"`
+}
+
+type Response struct {
+	Versions                 []Version `json:"versions"`
+	RequestIntervalInMinutes int       `json:"requestIntervalInMinutes"`
+}
+
+type Version struct {
+	Name                 string            `json:"name"`
+	ReleaseDate          string            `json:"releaseDate"`
+	MinUpgradableVersion string            `json:"minUpgradableVersion,omitempty"`
+	Tags                 []string          `json:"tags,omitempty"`
+	ExtraInfo            map[string]string `json:"extraInfo,omitempty"`
 }
 
 func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error) {
@@ -154,10 +168,10 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 	return data, nil
 }
 
-func Send(ctx context.Context, data *Data, endpoint string) error {
+func Send(ctx context.Context, data *Data, endpoint string) (*Response, error) {
 	jsonData, err := json.Marshal(data)
 	if err != nil {
-		return fmt.Errorf("failed to marshal data: %w", err)
+		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
 	slog.Info("sending data", "endpoint", endpoint)
@@ -175,7 +189,7 @@ func Send(ctx context.Context, data *Data, endpoint string) error {
 
 		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
 		if err != nil {
-			return fmt.Errorf("failed to create request: %w", err)
+			return nil, fmt.Errorf("failed to create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 
@@ -185,7 +199,14 @@ func Send(ctx context.Context, data *Data, endpoint string) error {
 			slog.Warn("attempt failed", "attempt", attempt, "error", lastErr)
 			continue
 		}
+
+		body, err := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			slog.Warn("attempt failed", "attempt", attempt, "error", lastErr)
+			continue
+		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
@@ -193,12 +214,26 @@ func Send(ctx context.Context, data *Data, endpoint string) error {
 			continue
 		}
 
-		slog.Debug("response received", "status", resp.StatusCode)
+		var response Response
+		if err := json.Unmarshal(body, &response); err != nil {
+			slog.Warn("failed to parse response", "error", err)
+			slog.Info("data sent", "attempt", attempt)
+			return nil, nil
+		}
+
+		slog.Info("response received", "versions", len(response.Versions), "intervalMinutes", response.RequestIntervalInMinutes)
+		for _, v := range response.Versions {
+			slog.Info("available version", "name", v.Name, "releaseDate", v.ReleaseDate, "tags", v.Tags)
+			if len(v.ExtraInfo) > 0 {
+				slog.Info("version extra info", "info", v.ExtraInfo)
+			}
+		}
+
 		slog.Info("data sent", "attempt", attempt)
-		return nil
+		return &response, nil
 	}
 
-	return lastErr
+	return nil, lastErr
 }
 
 func isControlPlaneNode(node *corev1.Node) bool {
