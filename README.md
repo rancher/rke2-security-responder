@@ -44,10 +44,13 @@ Example payload structure:
     "arch": "amd64",
     "selinux": "enabled",
     "cni-plugin": "cilium",
+    "cni-version": "v1.16.5",
     "ingress-controller": "rke2-ingress-nginx",
+    "ingress-version": "v1.12.1",
     "gpu-nodes": 2,
     "gpu-vendor": "nvidia",
-    "gpu-operator": "nvidia-gpu-operator"
+    "gpu-operator": "nvidia-gpu-operator",
+    "gpu-operator-version": "v25.10.1"
   }
 }
 ```

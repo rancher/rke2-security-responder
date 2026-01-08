@@ -107,29 +107,38 @@ func Collect(ctx context.Context, clientset *kubernetes.Clientset) (*Data, error
 	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osImage, "kernel", kernelVersion, "arch", arch, "selinux", selinuxInfo, "gpu-nodes", gpuNodeCount)
 
 	slog.Debug("detecting CNI plugin")
-	cniPlugin, err := detectCNIPlugin(ctx, clientset)
+	cniPlugin, cniVersion, err := detectCNIPlugin(ctx, clientset)
 	if err != nil {
 		slog.Warn("failed to detect CNI plugin", "error", err)
 		cniPlugin = "unknown"
 	}
 	data.ExtraFieldInfo["cni-plugin"] = cniPlugin
-	slog.Debug("detected CNI", "plugin", cniPlugin)
+	if cniVersion != "" {
+		data.ExtraFieldInfo["cni-version"] = cniVersion
+	}
+	slog.Debug("detected CNI", "plugin", cniPlugin, "version", cniVersion)
 
 	slog.Debug("detecting ingress controller")
-	ingressController, err := detectIngressController(ctx, clientset)
+	ingressController, ingressVersion, err := detectIngressController(ctx, clientset)
 	if err != nil {
 		slog.Warn("failed to detect ingress controller", "error", err)
 		ingressController = "unknown"
 	}
 	data.ExtraFieldInfo["ingress-controller"] = ingressController
-	slog.Debug("detected ingress", "controller", ingressController)
+	if ingressVersion != "" {
+		data.ExtraFieldInfo["ingress-version"] = ingressVersion
+	}
+	slog.Debug("detected ingress", "controller", ingressController, "version", ingressVersion)
 
 	slog.Debug("detecting GPU operator")
-	gpuOperator := detectGPUOperator(ctx, clientset)
+	gpuOperator, gpuOperatorVersion := detectGPUOperator(ctx, clientset)
 	if gpuOperator != "none" {
 		data.ExtraFieldInfo["gpu-operator"] = gpuOperator
+		if gpuOperatorVersion != "" {
+			data.ExtraFieldInfo["gpu-operator-version"] = gpuOperatorVersion
+		}
 	}
-	slog.Debug("detected GPU operator", "operator", gpuOperator)
+	slog.Debug("detected GPU operator", "operator", gpuOperator, "version", gpuOperatorVersion)
 
 	return data, nil
 }
@@ -200,44 +209,68 @@ func getSELinuxStatus(node *corev1.Node) string {
 	return "unknown"
 }
 
-func detectCNIPlugin(ctx context.Context, clientset *kubernetes.Clientset) (string, error) {
+func extractImageVersion(image string) string {
+	if idx := strings.LastIndex(image, ":"); idx != -1 {
+		tag := image[idx+1:]
+		if atIdx := strings.Index(tag, "@"); atIdx != -1 {
+			tag = tag[:atIdx]
+		}
+		return tag
+	}
+	return ""
+}
+
+func detectCNIPlugin(ctx context.Context, clientset *kubernetes.Clientset) (string, string, error) {
 	daemonSets, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+
+	cniPatterns := map[string]string{
+		"canal":   "canal",
+		"flannel": "flannel",
+		"calico":  "calico",
+		"cilium":  "cilium",
+		"weave":   "weave",
 	}
 
 	for _, ds := range daemonSets.Items {
 		name := strings.ToLower(ds.Name)
-		switch {
-		case strings.Contains(name, "canal"):
-			return "canal", nil
-		case strings.Contains(name, "flannel"):
-			return "flannel", nil
-		case strings.Contains(name, "calico"):
-			return "calico", nil
-		case strings.Contains(name, "cilium"):
-			return "cilium", nil
-		case strings.Contains(name, "weave"):
-			return "weave", nil
+		for pattern, cniName := range cniPatterns {
+			if strings.Contains(name, pattern) {
+				version := ""
+				if len(ds.Spec.Template.Spec.Containers) > 0 {
+					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
+				}
+				return cniName, version, nil
+			}
 		}
 	}
 
-	return "unknown", nil
+	return "unknown", "", nil
 }
 
-func detectIngressController(ctx context.Context, clientset *kubernetes.Clientset) (string, error) {
+func detectIngressController(ctx context.Context, clientset *kubernetes.Clientset) (string, string, error) {
 	deployments, err := clientset.AppsV1().Deployments("kube-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	for _, deploy := range deployments.Items {
 		name := strings.ToLower(deploy.Name)
+		var ingressName string
 		switch {
 		case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
-			return "rke2-ingress-nginx", nil
+			ingressName = "rke2-ingress-nginx"
 		case strings.Contains(name, "traefik"):
-			return "traefik", nil
+			ingressName = "traefik"
+		}
+		if ingressName != "" {
+			version := ""
+			if len(deploy.Spec.Template.Spec.Containers) > 0 {
+				version = extractImageVersion(deploy.Spec.Template.Spec.Containers[0].Image)
+			}
+			return ingressName, version, nil
 		}
 	}
 
@@ -245,19 +278,27 @@ func detectIngressController(ctx context.Context, clientset *kubernetes.Clientse
 	if err == nil {
 		for _, ds := range daemonSets.Items {
 			name := strings.ToLower(ds.Name)
+			var ingressName string
 			switch {
 			case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
-				return "rke2-ingress-nginx", nil
+				ingressName = "rke2-ingress-nginx"
 			case strings.Contains(name, "traefik"):
-				return "traefik", nil
+				ingressName = "traefik"
+			}
+			if ingressName != "" {
+				version := ""
+				if len(ds.Spec.Template.Spec.Containers) > 0 {
+					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
+				}
+				return ingressName, version, nil
 			}
 		}
 	}
 
-	return "none", nil
+	return "none", "", nil
 }
 
-func detectGPUOperator(ctx context.Context, clientset *kubernetes.Clientset) string {
+func detectGPUOperator(ctx context.Context, clientset *kubernetes.Clientset) (string, string) {
 	gpuNamespaces := map[string]string{
 		"gpu-operator":              "nvidia-gpu-operator",
 		"kube-amd-gpu":              "amd-gpu-operator",
@@ -272,10 +313,14 @@ func detectGPUOperator(ctx context.Context, clientset *kubernetes.Clientset) str
 		for _, ds := range daemonSets.Items {
 			name := strings.ToLower(ds.Name)
 			if strings.Contains(name, "device-plugin") || strings.Contains(name, "driver") {
-				return operator
+				version := ""
+				if len(ds.Spec.Template.Spec.Containers) > 0 {
+					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
+				}
+				return operator, version
 			}
 		}
 	}
 
-	return "none"
+	return "none", ""
 }
