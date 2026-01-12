@@ -101,6 +101,9 @@ jobs:
     name: Security Scan
     runs-on: ubuntu-latest
     needs: [docker]
+    permissions:
+      security-events: write
+      contents: read
     steps:
     - uses: actions/checkout@v6
 
