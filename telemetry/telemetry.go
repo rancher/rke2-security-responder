@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -120,12 +121,18 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	}
 	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osImage, "kernel", kernelVersion, "arch", arch, "selinux", selinuxInfo, "gpu-nodes", gpuNodeCount)
 
-	slog.Debug("detecting CNI plugin")
-	cniPlugin, cniVersion, err := detectCNIPlugin(ctx, clientset)
+	slog.Debug("collecting kube-system workloads")
+	kubeSystemDS, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		slog.Warn("failed to detect CNI plugin", "error", err)
-		cniPlugin = "unknown"
+		return nil, fmt.Errorf("failed to list kube-system daemonsets: %w", err)
 	}
+	kubeSystemDeploy, err := clientset.AppsV1().Deployments("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list kube-system deployments: %w", err)
+	}
+
+	slog.Debug("detecting CNI plugin")
+	cniPlugin, cniVersion := detectCNIPlugin(kubeSystemDS.Items)
 	data.ExtraFieldInfo["cni-plugin"] = cniPlugin
 	if cniVersion != "" {
 		data.ExtraFieldInfo["cni-version"] = cniVersion
@@ -133,11 +140,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	slog.Debug("detected CNI", "plugin", cniPlugin, "version", cniVersion)
 
 	slog.Debug("detecting ingress controller")
-	ingressController, ingressVersion, err := detectIngressController(ctx, clientset)
-	if err != nil {
-		slog.Warn("failed to detect ingress controller", "error", err)
-		ingressController = "unknown"
-	}
+	ingressController, ingressVersion := detectIngressController(kubeSystemDeploy.Items, kubeSystemDS.Items)
 	data.ExtraFieldInfo["ingress-controller"] = ingressController
 	if ingressVersion != "" {
 		data.ExtraFieldInfo["ingress-version"] = ingressVersion
@@ -266,12 +269,7 @@ func extractImageVersion(image string) string {
 	return ""
 }
 
-func detectCNIPlugin(ctx context.Context, clientset kubernetes.Interface) (string, string, error) {
-	daemonSets, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return "", "", err
-	}
-
+func detectCNIPlugin(daemonSets []appsv1.DaemonSet) (string, string) {
 	cniPatterns := map[string]string{
 		"canal":   "canal",
 		"flannel": "flannel",
@@ -280,7 +278,7 @@ func detectCNIPlugin(ctx context.Context, clientset kubernetes.Interface) (strin
 		"weave":   "weave",
 	}
 
-	for _, ds := range daemonSets.Items {
+	for _, ds := range daemonSets {
 		name := strings.ToLower(ds.Name)
 		for pattern, cniName := range cniPatterns {
 			if strings.Contains(name, pattern) {
@@ -288,21 +286,16 @@ func detectCNIPlugin(ctx context.Context, clientset kubernetes.Interface) (strin
 				if len(ds.Spec.Template.Spec.Containers) > 0 {
 					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
 				}
-				return cniName, version, nil
+				return cniName, version
 			}
 		}
 	}
 
-	return "unknown", "", nil
+	return "unknown", ""
 }
 
-func detectIngressController(ctx context.Context, clientset kubernetes.Interface) (string, string, error) {
-	deployments, err := clientset.AppsV1().Deployments("kube-system").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return "", "", err
-	}
-
-	for _, deploy := range deployments.Items {
+func detectIngressController(deployments []appsv1.Deployment, daemonSets []appsv1.DaemonSet) (string, string) {
+	for _, deploy := range deployments {
 		name := strings.ToLower(deploy.Name)
 		var ingressName string
 		switch {
@@ -316,32 +309,29 @@ func detectIngressController(ctx context.Context, clientset kubernetes.Interface
 			if len(deploy.Spec.Template.Spec.Containers) > 0 {
 				version = extractImageVersion(deploy.Spec.Template.Spec.Containers[0].Image)
 			}
-			return ingressName, version, nil
+			return ingressName, version
 		}
 	}
 
-	daemonSets, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
-	if err == nil {
-		for _, ds := range daemonSets.Items {
-			name := strings.ToLower(ds.Name)
-			var ingressName string
-			switch {
-			case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
-				ingressName = "rke2-ingress-nginx"
-			case strings.Contains(name, "traefik"):
-				ingressName = "traefik"
+	for _, ds := range daemonSets {
+		name := strings.ToLower(ds.Name)
+		var ingressName string
+		switch {
+		case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
+			ingressName = "rke2-ingress-nginx"
+		case strings.Contains(name, "traefik"):
+			ingressName = "traefik"
+		}
+		if ingressName != "" {
+			version := ""
+			if len(ds.Spec.Template.Spec.Containers) > 0 {
+				version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
 			}
-			if ingressName != "" {
-				version := ""
-				if len(ds.Spec.Template.Spec.Containers) > 0 {
-					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
-				}
-				return ingressName, version, nil
-			}
+			return ingressName, version
 		}
 	}
 
-	return "none", "", nil
+	return "none", ""
 }
 
 func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (string, string) {
