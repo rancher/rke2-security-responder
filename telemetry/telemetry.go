@@ -6,10 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sirupsen/logrus"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -49,24 +50,24 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 		ExtraFieldInfo: make(map[string]interface{}),
 	}
 
-	slog.Debug("collecting server version")
+	logrus.Debug("collecting server version")
 	versionInfo, err := clientset.Discovery().ServerVersion()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get server version: %w", err)
 	}
 	data.AppVersion = versionInfo.GitVersion
 	data.ExtraTagInfo["kubernetesVersion"] = versionInfo.GitVersion
-	slog.Debug("collected version", "version", versionInfo.GitVersion)
+	logrus.WithField("version", versionInfo.GitVersion).Debug("collected version")
 
-	slog.Debug("collecting cluster UUID from kube-system namespace")
+	logrus.Debug("collecting cluster UUID from kube-system namespace")
 	namespace, err := clientset.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get kube-system namespace: %w", err)
 	}
 	data.ExtraTagInfo["clusteruuid"] = string(namespace.UID)
-	slog.Debug("collected cluster UUID", "uuid", namespace.UID)
+	logrus.WithField("uuid", namespace.UID).Debug("collected cluster UUID")
 
-	slog.Debug("collecting node information")
+	logrus.Debug("collecting node information")
 	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list nodes: %w", err)
@@ -119,9 +120,17 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	if gpuVendor != "" {
 		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
 	}
-	slog.Debug("collected nodes", "server", serverNodeCount, "agent", agentNodeCount, "os", osImage, "kernel", kernelVersion, "arch", arch, "selinux", selinuxInfo, "gpu-nodes", gpuNodeCount)
+	logrus.WithFields(logrus.Fields{
+		"server":    serverNodeCount,
+		"agent":     agentNodeCount,
+		"os":        osImage,
+		"kernel":    kernelVersion,
+		"arch":      arch,
+		"selinux":   selinuxInfo,
+		"gpu-nodes": gpuNodeCount,
+	}).Debug("collected nodes")
 
-	slog.Debug("collecting kube-system workloads")
+	logrus.Debug("collecting kube-system workloads")
 	kubeSystemDS, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to list kube-system daemonsets: %w", err)
@@ -131,23 +140,23 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 		return nil, fmt.Errorf("failed to list kube-system deployments: %w", err)
 	}
 
-	slog.Debug("detecting CNI plugin")
+	logrus.Debug("detecting CNI plugin")
 	cniPlugin, cniVersion := detectCNIPlugin(kubeSystemDS.Items)
 	data.ExtraFieldInfo["cni-plugin"] = cniPlugin
 	if cniVersion != "" {
 		data.ExtraFieldInfo["cni-version"] = cniVersion
 	}
-	slog.Debug("detected CNI", "plugin", cniPlugin, "version", cniVersion)
+	logrus.WithFields(logrus.Fields{"plugin": cniPlugin, "version": cniVersion}).Debug("detected CNI")
 
-	slog.Debug("detecting ingress controller")
+	logrus.Debug("detecting ingress controller")
 	ingressController, ingressVersion := detectIngressController(kubeSystemDeploy.Items, kubeSystemDS.Items)
 	data.ExtraFieldInfo["ingress-controller"] = ingressController
 	if ingressVersion != "" {
 		data.ExtraFieldInfo["ingress-version"] = ingressVersion
 	}
-	slog.Debug("detected ingress", "controller", ingressController, "version", ingressVersion)
+	logrus.WithFields(logrus.Fields{"controller": ingressController, "version": ingressVersion}).Debug("detected ingress")
 
-	slog.Debug("detecting GPU operator")
+	logrus.Debug("detecting GPU operator")
 	gpuOperator, gpuOperatorVersion := detectGPUOperator(ctx, clientset)
 	if gpuOperator != "none" {
 		data.ExtraFieldInfo["gpu-operator"] = gpuOperator
@@ -155,9 +164,9 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 			data.ExtraFieldInfo["gpu-operator-version"] = gpuOperatorVersion
 		}
 	}
-	slog.Debug("detected GPU operator", "operator", gpuOperator, "version", gpuOperatorVersion)
+	logrus.WithFields(logrus.Fields{"operator": gpuOperator, "version": gpuOperatorVersion}).Debug("detected GPU operator")
 
-	slog.Debug("detecting Rancher Manager")
+	logrus.Debug("detecting Rancher Manager")
 	rancherManaged, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset)
 	data.ExtraFieldInfo["rancher-managed"] = rancherManaged
 	if rancherVersion != "" {
@@ -166,7 +175,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	if rancherInstallUUID != "" {
 		data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
 	}
-	slog.Debug("detected Rancher", "managed", rancherManaged, "version", rancherVersion, "installUUID", rancherInstallUUID)
+	logrus.WithFields(logrus.Fields{"managed": rancherManaged, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
 
 	return data, nil
 }
@@ -177,8 +186,8 @@ func Send(ctx context.Context, data *Data, endpoint string) (*Response, error) {
 		return nil, fmt.Errorf("failed to marshal data: %w", err)
 	}
 
-	slog.Info("sending data", "endpoint", endpoint)
-	slog.Debug("request payload", "size", len(jsonData))
+	logrus.WithField("endpoint", endpoint).Info("sending data")
+	logrus.WithField("size", len(jsonData)).Debug("request payload")
 
 	client := &http.Client{Timeout: defaultTimeout}
 
@@ -186,7 +195,7 @@ func Send(ctx context.Context, data *Data, endpoint string) (*Response, error) {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		if attempt > 1 {
 			delay := time.Duration(attempt-1) * retryDelay
-			slog.Info("retrying", "attempt", attempt, "max", maxRetries, "delay", delay)
+			logrus.WithFields(logrus.Fields{"attempt": attempt, "max": maxRetries, "delay": delay}).Info("retrying")
 			time.Sleep(delay)
 		}
 
@@ -199,7 +208,7 @@ func Send(ctx context.Context, data *Data, endpoint string) (*Response, error) {
 		resp, err := client.Do(req)
 		if err != nil {
 			lastErr = fmt.Errorf("failed to send request: %w", err)
-			slog.Warn("attempt failed", "attempt", attempt, "error", lastErr)
+			logrus.WithField("attempt", attempt).WithError(lastErr).Warn("attempt failed")
 			continue
 		}
 
@@ -207,32 +216,32 @@ func Send(ctx context.Context, data *Data, endpoint string) (*Response, error) {
 		_ = resp.Body.Close()
 		if err != nil {
 			lastErr = fmt.Errorf("failed to read response: %w", err)
-			slog.Warn("attempt failed", "attempt", attempt, "error", lastErr)
+			logrus.WithField("attempt", attempt).WithError(lastErr).Warn("attempt failed")
 			continue
 		}
 
 		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
-			slog.Warn("attempt failed", "attempt", attempt, "error", lastErr)
+			logrus.WithField("attempt", attempt).WithError(lastErr).Warn("attempt failed")
 			continue
 		}
 
 		var response Response
 		if err := json.Unmarshal(body, &response); err != nil {
-			slog.Warn("failed to parse response", "error", err)
-			slog.Info("data sent", "attempt", attempt)
+			logrus.WithError(err).Warn("failed to parse response")
+			logrus.WithField("attempt", attempt).Info("data sent")
 			return nil, nil
 		}
 
-		slog.Info("response received", "versions", len(response.Versions), "intervalMinutes", response.RequestIntervalInMinutes)
+		logrus.WithFields(logrus.Fields{"versions": len(response.Versions), "intervalMinutes": response.RequestIntervalInMinutes}).Info("response received")
 		for _, v := range response.Versions {
-			slog.Info("available version", "name", v.Name, "releaseDate", v.ReleaseDate, "tags", v.Tags)
+			logrus.WithFields(logrus.Fields{"name": v.Name, "releaseDate": v.ReleaseDate, "tags": v.Tags}).Info("available version")
 			if len(v.ExtraInfo) > 0 {
-				slog.Info("version extra info", "info", v.ExtraInfo)
+				logrus.WithField("extraInfo", v.ExtraInfo).Info("version extra info")
 			}
 		}
 
-		slog.Info("data sent", "attempt", attempt)
+		logrus.WithField("attempt", attempt).Info("data sent")
 		return &response, nil
 	}
 

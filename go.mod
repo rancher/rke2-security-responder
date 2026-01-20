@@ -3,6 +3,7 @@ module github.com/rancher/rke2-security-responder
 go 1.25.5
 
 require (
+	github.com/sirupsen/logrus v1.9.4
 	k8s.io/api v0.35.0
 	k8s.io/apimachinery v0.35.0
 	k8s.io/client-go v0.35.0

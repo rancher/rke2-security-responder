@@ -36,6 +36,7 @@ bin/
 dist/
 
 AGENT.md
+AGENTS.md
 CLAUDE.md
 .claude
 *~

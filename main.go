@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 	"regexp"
 	"strings"
 
 	"github.com/rancher/rke2-security-responder/telemetry"
+	"github.com/sirupsen/logrus"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -26,20 +26,19 @@ func main() {
 	flag.Parse()
 
 	if *verbose {
-		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		logrus.SetLevel(logrus.DebugLevel)
 	}
 
 	if err := run(); err != nil {
-		slog.Error("fatal", "error", err)
-		os.Exit(1)
+		logrus.WithError(err).Fatal("run failed")
 	}
 }
 
 func run() error {
-	slog.Info("starting", "version", Version)
+	logrus.WithField("version", Version).Info("starting")
 
 	if os.Getenv("DISABLE_SECURITY_RESPONDER_CHECK") == "true" {
-		slog.Info("security check disabled via DISABLE_SECURITY_RESPONDER_CHECK")
+		logrus.Info("security check disabled via DISABLE_SECURITY_RESPONDER_CHECK")
 		return nil
 	}
 
@@ -69,7 +68,7 @@ func run() error {
 
 	if *debug {
 		jsonData, _ := json.MarshalIndent(data, "", "  ")
-		slog.Info("debug mode: skipping send", "payload", string(jsonData))
+		logrus.WithField("payload", string(jsonData)).Info("debug mode: skipping send")
 		return nil
 	}
 
@@ -79,7 +78,7 @@ func run() error {
 	}
 
 	if _, err := telemetry.Send(ctx, data, endpoint); err != nil {
-		slog.Warn("failed to send (expected in disconnected environments)", "error", err)
+		logrus.WithError(err).Warn("failed to send (expected in disconnected environments)")
 	}
 
 	return nil
