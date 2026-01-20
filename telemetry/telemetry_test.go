@@ -516,3 +516,63 @@ func TestCollect_IngressAsDaemonSet(t *testing.T) {
 		t.Errorf("ingress-controller = %v, want rke2-ingress-nginx", data.ExtraFieldInfo["ingress-controller"])
 	}
 }
+
+func TestCollect_IPStackFromService(t *testing.T) {
+	tests := []struct {
+		name       string
+		ipFamilies []corev1.IPFamily
+		expected   string
+	}{
+		{"ipv4-only", []corev1.IPFamily{corev1.IPv4Protocol}, "ipv4-only"},
+		{"ipv6-only", []corev1.IPFamily{corev1.IPv6Protocol}, "ipv6-only"},
+		{"dual-stack", []corev1.IPFamily{corev1.IPv4Protocol, corev1.IPv6Protocol}, "dual-stack"},
+		{"dual-stack-v6-first", []corev1.IPFamily{corev1.IPv6Protocol, corev1.IPv4Protocol}, "dual-stack"},
+		{"empty-families", []corev1.IPFamily{}, "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clientset := fake.NewClientset(
+				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+				&corev1.Node{
+					ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+					Status: corev1.NodeStatus{
+						NodeInfo: corev1.NodeSystemInfo{OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"},
+					},
+				},
+				&corev1.Service{
+					ObjectMeta: metav1.ObjectMeta{Name: "kubernetes", Namespace: "default"},
+					Spec:       corev1.ServiceSpec{IPFamilies: tt.ipFamilies},
+				},
+			)
+
+			data, err := Collect(context.Background(), clientset)
+			if err != nil {
+				t.Fatalf("Collect() error = %v", err)
+			}
+
+			if data.ExtraFieldInfo["ip-stack"] != tt.expected {
+				t.Errorf("ip-stack = %v, want %v", data.ExtraFieldInfo["ip-stack"], tt.expected)
+			}
+		})
+	}
+}
+
+func TestCollect_IPStackNoService(t *testing.T) {
+	clientset := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
+			Status:     corev1.NodeStatus{NodeInfo: corev1.NodeSystemInfo{OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"}},
+		},
+	)
+
+	data, err := Collect(context.Background(), clientset)
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if data.ExtraFieldInfo["ip-stack"] != "unknown" {
+		t.Errorf("ip-stack = %v, want unknown", data.ExtraFieldInfo["ip-stack"])
+	}
+}

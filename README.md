@@ -22,6 +22,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - SELinux status
   - GPU node count, vendor, and operator (if present)
   - Rancher Manager status, version, and install UUID (if managed)
+  - IP stack configuration (IPv4-only, IPv6-only, or dual-stack)
 - Sends data to a configurable endpoint
 - Fails gracefully in disconnected environments
 - Minimal resource overhead
@@ -54,7 +55,8 @@ Example payload structure:
     "gpu-operator-version": "v25.10.1",
     "rancher-managed": true,
     "rancher-version": "v2.9.3",
-    "rancher-install-uuid": "53741f60-f208-48fc-ae81-8a969510a598"
+    "rancher-install-uuid": "53741f60-f208-48fc-ae81-8a969510a598",
+    "ip-stack": "dual-stack"
   }
 }
 ```

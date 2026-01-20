@@ -18,4 +18,8 @@ rules:
   - apiGroups: ["apps"]
     resources: ["daemonsets", "deployments"]
     verbs: ["get", "list"]
+  # Need to read services to detect IP stack configuration (IPv4/IPv6/dual-stack)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
 {{- end }}

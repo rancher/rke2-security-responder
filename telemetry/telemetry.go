@@ -177,6 +177,11 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	}
 	logrus.WithFields(logrus.Fields{"managed": rancherManaged, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
 
+	logrus.Debug("detecting IP stack configuration")
+	ipStack := detectIPStack(ctx, clientset)
+	data.ExtraFieldInfo["ip-stack"] = ipStack
+	logrus.WithField("ip-stack", ipStack).Debug("detected IP stack")
+
 	return data, nil
 }
 
@@ -392,4 +397,35 @@ func detectRancherManager(ctx context.Context, clientset kubernetes.Interface) (
 		}
 	}
 	return true, version, installUUID
+}
+
+// detectIPStack determines the cluster's IP stack configuration from the kubernetes service.
+func detectIPStack(ctx context.Context, clientset kubernetes.Interface) string {
+	kubeSvc, err := clientset.CoreV1().Services("default").Get(ctx, "kubernetes", metav1.GetOptions{})
+	if err != nil {
+		logrus.WithError(err).Warn("failed to get kubernetes service for IP stack detection")
+		return "unknown"
+	}
+	if len(kubeSvc.Spec.IPFamilies) == 0 {
+		return "unknown"
+	}
+	hasIPv4, hasIPv6 := false, false
+	for _, f := range kubeSvc.Spec.IPFamilies {
+		switch f {
+		case corev1.IPv4Protocol:
+			hasIPv4 = true
+		case corev1.IPv6Protocol:
+			hasIPv6 = true
+		}
+	}
+	switch {
+	case hasIPv4 && hasIPv6:
+		return "dual-stack"
+	case hasIPv4:
+		return "ipv4-only"
+	case hasIPv6:
+		return "ipv6-only"
+	default:
+		return "unknown"
+	}
 }
