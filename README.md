@@ -15,7 +15,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
 - Collects cluster metadata including:
   - Kubernetes version
   - Cluster UUID (based on kube-system namespace UID)
-  - Node counts (control plane vs agent nodes)
+  - Node counts, CPU (millicores), and memory (bytes) for control plane and agent nodes
   - CNI plugin in use
   - Ingress controller in use
   - Operating system, OS image, kernel version, architecture
@@ -41,6 +41,10 @@ Example payload structure:
   "extraFieldInfo": {
     "serverNodeCount": 3,
     "agentNodeCount": 2,
+    "serverCPU": 12000,
+    "agentCPU": 8000,
+    "serverMemory": 25769803776,
+    "agentMemory": 17179869184,
     "operating-system": "linux",
     "os": "SLE Micro 6.1",
     "kernel": "6.4.0-150600.23.47-default",

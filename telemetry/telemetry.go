@@ -74,6 +74,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	}
 
 	var serverNodeCount, agentNodeCount, gpuNodeCount int
+	var serverCPU, agentCPU, serverMemory, agentMemory int64
 	var operatingSystem, osImage, kernelVersion, arch, selinuxInfo, gpuVendor string
 
 	gpuResources := []corev1.ResourceName{"nvidia.com/gpu", "amd.com/gpu", "intel.com/gpu"}
@@ -84,10 +85,16 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	}
 
 	for _, node := range nodes.Items {
+		cpu := node.Status.Allocatable.Cpu().MilliValue()
+		mem := node.Status.Allocatable.Memory().Value()
 		if isControlPlaneNode(&node) {
 			serverNodeCount++
+			serverCPU += cpu
+			serverMemory += mem
 		} else {
 			agentNodeCount++
+			agentCPU += cpu
+			agentMemory += mem
 		}
 		if osImage == "" {
 			operatingSystem = node.Status.NodeInfo.OperatingSystem
@@ -113,6 +120,10 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 
 	data.ExtraFieldInfo["serverNodeCount"] = serverNodeCount
 	data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
+	data.ExtraFieldInfo["serverCPU"] = serverCPU
+	data.ExtraFieldInfo["agentCPU"] = agentCPU
+	data.ExtraFieldInfo["serverMemory"] = serverMemory
+	data.ExtraFieldInfo["agentMemory"] = agentMemory
 	data.ExtraFieldInfo["operating-system"] = operatingSystem
 	data.ExtraFieldInfo["os"] = osImage
 	data.ExtraFieldInfo["kernel"] = kernelVersion
@@ -123,14 +134,13 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
 	}
 	logrus.WithFields(logrus.Fields{
-		"server":           serverNodeCount,
-		"agent":            agentNodeCount,
-		"operating-system": operatingSystem,
-		"os":               osImage,
-		"kernel":           kernelVersion,
-		"arch":             arch,
-		"selinux":          selinuxInfo,
-		"gpu-nodes":        gpuNodeCount,
+		"server":       serverNodeCount,
+		"agent":        agentNodeCount,
+		"serverCPU":    serverCPU,
+		"agentCPU":     agentCPU,
+		"serverMemory": serverMemory,
+		"agentMemory":  agentMemory,
+		"gpu-nodes":    gpuNodeCount,
 	}).Debug("collected nodes")
 
 	logrus.Debug("collecting kube-system workloads")
