@@ -74,7 +74,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	}
 
 	var serverNodeCount, agentNodeCount, gpuNodeCount int
-	var osImage, kernelVersion, arch, selinuxInfo, gpuVendor string
+	var operatingSystem, osImage, kernelVersion, arch, selinuxInfo, gpuVendor string
 
 	gpuResources := []corev1.ResourceName{"nvidia.com/gpu", "amd.com/gpu", "intel.com/gpu"}
 	gpuVendorMap := map[corev1.ResourceName]string{
@@ -90,6 +90,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 			agentNodeCount++
 		}
 		if osImage == "" {
+			operatingSystem = node.Status.NodeInfo.OperatingSystem
 			osImage = node.Status.NodeInfo.OSImage
 			kernelVersion = node.Status.NodeInfo.KernelVersion
 			arch = node.Status.NodeInfo.Architecture
@@ -112,6 +113,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 
 	data.ExtraFieldInfo["serverNodeCount"] = serverNodeCount
 	data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
+	data.ExtraFieldInfo["operating-system"] = operatingSystem
 	data.ExtraFieldInfo["os"] = osImage
 	data.ExtraFieldInfo["kernel"] = kernelVersion
 	data.ExtraFieldInfo["arch"] = arch
@@ -121,13 +123,14 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
 	}
 	logrus.WithFields(logrus.Fields{
-		"server":    serverNodeCount,
-		"agent":     agentNodeCount,
-		"os":        osImage,
-		"kernel":    kernelVersion,
-		"arch":      arch,
-		"selinux":   selinuxInfo,
-		"gpu-nodes": gpuNodeCount,
+		"server":           serverNodeCount,
+		"agent":            agentNodeCount,
+		"operating-system": operatingSystem,
+		"os":               osImage,
+		"kernel":           kernelVersion,
+		"arch":             arch,
+		"selinux":          selinuxInfo,
+		"gpu-nodes":        gpuNodeCount,
 	}).Debug("collected nodes")
 
 	logrus.Debug("collecting kube-system workloads")

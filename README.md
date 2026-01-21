@@ -18,7 +18,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - Node counts (control plane vs agent nodes)
   - CNI plugin in use
   - Ingress controller in use
-  - Operating system, kernel version, architecture
+  - Operating system, OS image, kernel version, architecture
   - SELinux status
   - GPU node count, vendor, and operator (if present)
   - Rancher Manager status, version, and install UUID (if managed)
@@ -41,6 +41,7 @@ Example payload structure:
   "extraFieldInfo": {
     "serverNodeCount": 3,
     "agentNodeCount": 2,
+    "operating-system": "linux",
     "os": "SLE Micro 6.1",
     "kernel": "6.4.0-150600.23.47-default",
     "arch": "amd64",
