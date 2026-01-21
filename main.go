@@ -37,11 +37,6 @@ func main() {
 func run() error {
 	logrus.WithField("version", Version).Info("starting")
 
-	if os.Getenv("DISABLE_SECURITY_RESPONDER_CHECK") == "true" {
-		logrus.Info("security check disabled via DISABLE_SECURITY_RESPONDER_CHECK")
-		return nil
-	}
-
 	config, err := rest.InClusterConfig()
 	if err != nil {
 		return fmt.Errorf("in-cluster config: %w", err)
@@ -54,7 +49,12 @@ func run() error {
 
 	ctx := context.Background()
 
-	data, err := telemetry.Collect(ctx, clientset)
+	mode := os.Getenv("SECURITY_RESPONDER_MODE")
+	if mode == "" {
+		mode = "recommended"
+	}
+
+	data, err := telemetry.Collect(ctx, clientset, mode)
 	if err != nil {
 		return fmt.Errorf("collect data: %w", err)
 	}

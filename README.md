@@ -6,13 +6,26 @@ RKE2 component for in-cluster security metadata collection and CVE notifications
 
 The RKE2 Security Responder is a Kubernetes component that collects non-personally identifiable cluster metadata and sends it to a security check endpoint. This helps RKE2 maintainers understand deployment patterns relevant to security advisories and helps users stay informed about security updates.
 
+## Benefit to users
+
+Open Source software is often opaque to maintainers and project contributors. We kindly ask that
+you help us better understand our community - you! - in this non-intrusive, privacy-preserving way.
+
+This helps us better direct and prioritize requirements, tasks, and the potential impact of
+security issues to best serve our community. It ensures your specific needs are known and
+represented.
+
+None of this data is personally identifiable data nor used for such purposes.
+
+Thank you!
+
 ## Architecture
 
 Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/master/docs/adrs/010-security-responder.md), this component:
 
 - Runs as a CronJob in the `kube-system` namespace
 - Executes thrice daily (every 8 hours: `0 */8 * * *`)
-- Collects cluster metadata including:
+- Collects cluster metadata including (depending on settings):
   - Kubernetes version
   - Cluster UUID (based on kube-system namespace UID)
   - Node counts, CPU (millicores), and memory (bytes) for control plane and agent nodes
@@ -27,9 +40,35 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
 - Fails gracefully in disconnected environments
 - Minimal resource overhead
 
-## Data Collection
+## Configuration
 
-Example payload structure:
+### Collection Mode
+
+The security responder supports two collection modes controlled by the `mode` Helm value:
+
+| Mode | Description |
+|------|-------------|
+| `recommended` | Optimal data sharing (default) |
+| `minimal` | Reduced impact: omits node/GPU counts, resource totals, and Rancher version/UUID |
+
+To disable completely, use RKE2's `disable:` configuration (see below). Please consider
+the `minimal` setting instead.
+
+**Minimal mode** collects only:
+- Kubernetes version and cluster UUID
+- OS, kernel, architecture, SELinux status
+- CNI plugin, ingress controller, IP stack configuration
+- GPU presence and vendor
+- Whether Rancher manages the cluster (boolean only)
+
+**Minimal mode** redacts:
+- `serverNodeCount`, `agentNodeCount`, `gpuNodeCount` → `-1`
+- `serverCPU`, `agentCPU`, `serverMemory`, `agentMemory` → `-1`
+- `rancher-version`, `rancher-install-uuid` → `""`
+
+## Data Shared
+
+Example recommended payload structure:
 
 ```json
 {
@@ -39,6 +78,7 @@ Example payload structure:
     "clusteruuid": "53741f60-f208-48fc-ae81-8a969510a598"
   },
   "extraFieldInfo": {
+    "mode": "recommended",
     "serverNodeCount": 3,
     "agentNodeCount": 2,
     "serverCPU": 12000,
@@ -54,7 +94,7 @@ Example payload structure:
     "cni-version": "v1.16.5",
     "ingress-controller": "rke2-ingress-nginx",
     "ingress-version": "v1.12.1",
-    "gpu-nodes": 2,
+    "gpuNodeCount": 2,
     "gpu-vendor": "nvidia",
     "gpu-operator": "nvidia-gpu-operator",
     "gpu-operator-version": "v25.10.1",
@@ -66,13 +106,14 @@ Example payload structure:
 }
 ```
 
-The `clusteruuid` is completely random (the UUID of the `kube-system` namespace) and does not expose any privacy concerns.
-
-## Configuration
+The `clusteruuid` is completely random (the UUID of the `kube-system` namespace) and does not
+expose any privacy concerns. The only purpose is de-duplication of reports.
 
 ### Disabling the Security Responder
 
-To disable the security responder, add the following to your RKE2 configuration:
+Should even the `minimal` mode not suffice for your requirements, you can
+disable the security responder completely by adding the following to your
+RKE2 configuration:
 
 ```yaml
 # /etc/rancher/rke2/config.yaml
@@ -84,10 +125,9 @@ disable:
 
 The component is packaged as a Helm chart with the following configurable values:
 
-- `enabled`: Whether the security responder is enabled (default: `true`)
+- `mode`: Collection mode - `"recommended"` (default) or `"minimal"`
 - `schedule`: CronJob schedule (default: `"0 */8 * * *"`)
 - `check.endpoint`: Security check endpoint URL (default: `"https://security-responder.rke2.io/v1/check"`)
-- `check.disabled`: Disable security check (default: `false`)
 - `image.repository`: Container image repository (default: `"rancher/rke2-security-responder"`)
 - `image.tag`: Container image tag (default: `"v0.1.0"`)
 - `resources`: Resource limits and requests
@@ -248,4 +288,3 @@ make helm-lint
 ## License
 
 Apache 2.0 License. See [LICENSE](LICENSE) for full text.
-

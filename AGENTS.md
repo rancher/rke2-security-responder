@@ -43,7 +43,7 @@ Non-critical errors: log warning and continue.
 - HTTP requests must use context with timeout
 - Use HTTPS and TLS wherever possible
 - Container runs as non-root (UID 65532) from scratch image
-- Disable via `DISABLE_SECURITY_RESPONDER_CHECK=true`
+- Disable via RKE2's `disable: [rke2-security-responder]` config
 
 ## Testing
 

@@ -44,11 +44,13 @@ type Version struct {
 	ExtraInfo            map[string]string `json:"extraInfo,omitempty"`
 }
 
-func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error) {
+func Collect(ctx context.Context, clientset kubernetes.Interface, mode string) (*Data, error) {
 	data := &Data{
 		ExtraTagInfo:   make(map[string]string),
 		ExtraFieldInfo: make(map[string]interface{}),
 	}
+	data.ExtraFieldInfo["mode"] = mode
+	isMinimal := mode == "minimal"
 
 	logrus.Debug("collecting server version")
 	versionInfo, err := clientset.Discovery().ServerVersion()
@@ -118,18 +120,28 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 		}
 	}
 
-	data.ExtraFieldInfo["serverNodeCount"] = serverNodeCount
-	data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
-	data.ExtraFieldInfo["serverCPU"] = serverCPU
-	data.ExtraFieldInfo["agentCPU"] = agentCPU
-	data.ExtraFieldInfo["serverMemory"] = serverMemory
-	data.ExtraFieldInfo["agentMemory"] = agentMemory
+	if isMinimal {
+		data.ExtraFieldInfo["serverNodeCount"] = -1
+		data.ExtraFieldInfo["agentNodeCount"] = -1
+		data.ExtraFieldInfo["gpuNodeCount"] = -1
+		data.ExtraFieldInfo["serverCPU"] = int64(-1)
+		data.ExtraFieldInfo["agentCPU"] = int64(-1)
+		data.ExtraFieldInfo["serverMemory"] = int64(-1)
+		data.ExtraFieldInfo["agentMemory"] = int64(-1)
+	} else {
+		data.ExtraFieldInfo["serverNodeCount"] = serverNodeCount
+		data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
+		data.ExtraFieldInfo["serverCPU"] = serverCPU
+		data.ExtraFieldInfo["agentCPU"] = agentCPU
+		data.ExtraFieldInfo["serverMemory"] = serverMemory
+		data.ExtraFieldInfo["agentMemory"] = agentMemory
+		data.ExtraFieldInfo["gpuNodeCount"] = gpuNodeCount
+	}
 	data.ExtraFieldInfo["operating-system"] = operatingSystem
 	data.ExtraFieldInfo["os"] = osImage
 	data.ExtraFieldInfo["kernel"] = kernelVersion
 	data.ExtraFieldInfo["arch"] = arch
 	data.ExtraFieldInfo["selinux"] = selinuxInfo
-	data.ExtraFieldInfo["gpu-nodes"] = gpuNodeCount
 	if gpuVendor != "" {
 		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
 	}
@@ -140,7 +152,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 		"agentCPU":     agentCPU,
 		"serverMemory": serverMemory,
 		"agentMemory":  agentMemory,
-		"gpu-nodes":    gpuNodeCount,
+		"gpuNodeCount": gpuNodeCount,
 	}).Debug("collected nodes")
 
 	logrus.Debug("collecting kube-system workloads")
@@ -182,11 +194,16 @@ func Collect(ctx context.Context, clientset kubernetes.Interface) (*Data, error)
 	logrus.Debug("detecting Rancher Manager")
 	rancherManaged, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset)
 	data.ExtraFieldInfo["rancher-managed"] = rancherManaged
-	if rancherVersion != "" {
-		data.ExtraFieldInfo["rancher-version"] = rancherVersion
-	}
-	if rancherInstallUUID != "" {
-		data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
+	if isMinimal {
+		data.ExtraFieldInfo["rancher-version"] = ""
+		data.ExtraFieldInfo["rancher-install-uuid"] = ""
+	} else {
+		if rancherVersion != "" {
+			data.ExtraFieldInfo["rancher-version"] = rancherVersion
+		}
+		if rancherInstallUUID != "" {
+			data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
+		}
 	}
 	logrus.WithFields(logrus.Fields{"managed": rancherManaged, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
 

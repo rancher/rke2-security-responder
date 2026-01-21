@@ -11,8 +11,12 @@ global:
   rke2DataDir: ""
   serviceCIDR: ""
 
-# Whether the security responder is enabled
-enabled: true
+# Metrics collection mode:
+#   "minimal"     - Reduced impact: no node counts/resources, no Rancher version details
+#   "recommended" - Optimal metrics sharing (default)
+# See README.md for full documentation of these settings.
+# To disable completely, use RKE2's "disable: [rke2-security-responder]" config option.
+mode: "recommended"
 
 # Image configuration
 image:
@@ -26,8 +30,6 @@ schedule: "0 */8 * * *"
 # Security check endpoint configuration
 check:
   endpoint: "https://security-responder.rke2.io/v1/check"
-  # Set to true to disable security check
-  disabled: false
 
 # Resource limits
 resources:

@@ -167,11 +167,14 @@ func TestCollect_BasicCluster(t *testing.T) {
 		},
 	)
 
-	data, err := Collect(context.Background(), clientset)
+	data, err := Collect(context.Background(), clientset, "recommended")
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
+	if data.ExtraFieldInfo["mode"] != "recommended" {
+		t.Errorf("mode = %q, want %q", data.ExtraFieldInfo["mode"], "recommended")
+	}
 	if data.ExtraTagInfo["clusteruuid"] != "test-cluster-uuid" {
 		t.Errorf("clusteruuid = %q, want %q", data.ExtraTagInfo["clusteruuid"], "test-cluster-uuid")
 	}
@@ -223,7 +226,7 @@ func TestCollect_CNIDetection(t *testing.T) {
 				},
 			)
 
-			data, err := Collect(context.Background(), clientset)
+			data, err := Collect(context.Background(), clientset, "recommended")
 			if err != nil {
 				t.Fatalf("Collect() error = %v", err)
 			}
@@ -266,7 +269,7 @@ func TestCollect_IngressDetection(t *testing.T) {
 				},
 			)
 
-			data, err := Collect(context.Background(), clientset)
+			data, err := Collect(context.Background(), clientset, "recommended")
 			if err != nil {
 				t.Fatalf("Collect() error = %v", err)
 			}
@@ -298,13 +301,13 @@ func TestCollect_GPUDetection(t *testing.T) {
 		},
 	)
 
-	data, err := Collect(context.Background(), clientset)
+	data, err := Collect(context.Background(), clientset, "recommended")
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
-	if data.ExtraFieldInfo["gpu-nodes"] != 1 {
-		t.Errorf("gpu-nodes = %v, want 1", data.ExtraFieldInfo["gpu-nodes"])
+	if data.ExtraFieldInfo["gpuNodeCount"] != 1 {
+		t.Errorf("gpuNodeCount = %v, want 1", data.ExtraFieldInfo["gpuNodeCount"])
 	}
 	if data.ExtraFieldInfo["gpu-vendor"] != "nvidia" {
 		t.Errorf("gpu-vendor = %v, want nvidia", data.ExtraFieldInfo["gpu-vendor"])
@@ -336,7 +339,7 @@ func TestCollect_RancherManaged(t *testing.T) {
 		},
 	)
 
-	data, err := Collect(context.Background(), clientset)
+	data, err := Collect(context.Background(), clientset, "recommended")
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
@@ -355,7 +358,7 @@ func TestCollect_RancherManaged(t *testing.T) {
 func TestCollect_MissingKubeSystem(t *testing.T) {
 	clientset := fake.NewClientset()
 
-	_, err := Collect(context.Background(), clientset)
+	_, err := Collect(context.Background(), clientset, "recommended")
 	if err == nil {
 		t.Error("Collect() expected error for missing kube-system namespace")
 	}
@@ -478,7 +481,7 @@ func TestCollect_GPUOperatorDetection(t *testing.T) {
 		},
 	)
 
-	data, err := Collect(context.Background(), clientset)
+	data, err := Collect(context.Background(), clientset, "recommended")
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
@@ -507,7 +510,7 @@ func TestCollect_IngressAsDaemonSet(t *testing.T) {
 		},
 	)
 
-	data, err := Collect(context.Background(), clientset)
+	data, err := Collect(context.Background(), clientset, "recommended")
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
@@ -546,7 +549,7 @@ func TestCollect_IPStackFromService(t *testing.T) {
 				},
 			)
 
-			data, err := Collect(context.Background(), clientset)
+			data, err := Collect(context.Background(), clientset, "recommended")
 			if err != nil {
 				t.Fatalf("Collect() error = %v", err)
 			}
@@ -567,12 +570,177 @@ func TestCollect_IPStackNoService(t *testing.T) {
 		},
 	)
 
-	data, err := Collect(context.Background(), clientset)
+	data, err := Collect(context.Background(), clientset, "recommended")
 	if err != nil {
 		t.Fatalf("Collect() error = %v", err)
 	}
 
 	if data.ExtraFieldInfo["ip-stack"] != "unknown" {
 		t.Errorf("ip-stack = %v, want unknown", data.ExtraFieldInfo["ip-stack"])
+	}
+}
+
+func TestCollect_MinimalMode(t *testing.T) {
+	clientset := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "server-1",
+				Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""},
+			},
+			Status: corev1.NodeStatus{
+				NodeInfo: corev1.NodeSystemInfo{OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"},
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("4"),
+					corev1.ResourceMemory: resource.MustParse("8Gi"),
+				},
+			},
+		},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "agent-1"},
+			Status: corev1.NodeStatus{
+				NodeInfo: corev1.NodeSystemInfo{OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"},
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("8"),
+					corev1.ResourceMemory: resource.MustParse("16Gi"),
+				},
+			},
+		},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "cattle-cluster-agent", Namespace: "cattle-system"},
+			Spec: appsv1.DeploymentSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Image: "rancher/rancher-agent:v2.8.0",
+							Env: []corev1.EnvVar{
+								{Name: "CATTLE_INSTALL_UUID", Value: "test-uuid"},
+							},
+						}},
+					},
+				},
+			},
+		},
+	)
+
+	data, err := Collect(context.Background(), clientset, "minimal")
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	// Mode field should be set
+	if data.ExtraFieldInfo["mode"] != "minimal" {
+		t.Errorf("mode = %q, want %q", data.ExtraFieldInfo["mode"], "minimal")
+	}
+
+	// Node counts should be -1 in minimal mode
+	if data.ExtraFieldInfo["serverNodeCount"] != -1 {
+		t.Errorf("serverNodeCount = %v, want -1", data.ExtraFieldInfo["serverNodeCount"])
+	}
+	if data.ExtraFieldInfo["agentNodeCount"] != -1 {
+		t.Errorf("agentNodeCount = %v, want -1", data.ExtraFieldInfo["agentNodeCount"])
+	}
+	if data.ExtraFieldInfo["gpuNodeCount"] != -1 {
+		t.Errorf("gpuNodeCount = %v, want -1", data.ExtraFieldInfo["gpuNodeCount"])
+	}
+
+	// CPU/memory should be -1 in minimal mode
+	if data.ExtraFieldInfo["serverCPU"] != int64(-1) {
+		t.Errorf("serverCPU = %v, want -1", data.ExtraFieldInfo["serverCPU"])
+	}
+	if data.ExtraFieldInfo["agentCPU"] != int64(-1) {
+		t.Errorf("agentCPU = %v, want -1", data.ExtraFieldInfo["agentCPU"])
+	}
+	if data.ExtraFieldInfo["serverMemory"] != int64(-1) {
+		t.Errorf("serverMemory = %v, want -1", data.ExtraFieldInfo["serverMemory"])
+	}
+	if data.ExtraFieldInfo["agentMemory"] != int64(-1) {
+		t.Errorf("agentMemory = %v, want -1", data.ExtraFieldInfo["agentMemory"])
+	}
+
+	// Rancher-managed should still be present
+	if data.ExtraFieldInfo["rancher-managed"] != true {
+		t.Errorf("rancher-managed = %v, want true", data.ExtraFieldInfo["rancher-managed"])
+	}
+
+	// Rancher version and UUID should be empty strings in minimal mode
+	if data.ExtraFieldInfo["rancher-version"] != "" {
+		t.Errorf("rancher-version = %v, want empty string", data.ExtraFieldInfo["rancher-version"])
+	}
+	if data.ExtraFieldInfo["rancher-install-uuid"] != "" {
+		t.Errorf("rancher-install-uuid = %v, want empty string", data.ExtraFieldInfo["rancher-install-uuid"])
+	}
+
+	// OS info should still be present
+	if data.ExtraFieldInfo["os"] != "test" {
+		t.Errorf("os = %v, want test", data.ExtraFieldInfo["os"])
+	}
+	if data.ExtraFieldInfo["arch"] != "amd64" {
+		t.Errorf("arch = %v, want amd64", data.ExtraFieldInfo["arch"])
+	}
+}
+
+func TestCollect_RecommendedModeIncludesRancherDetails(t *testing.T) {
+	clientset := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cattle-system"}},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "server-1",
+				Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""},
+			},
+			Status: corev1.NodeStatus{
+				NodeInfo: corev1.NodeSystemInfo{OSImage: "test", KernelVersion: "5.0", Architecture: "amd64"},
+				Allocatable: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("4"),
+					corev1.ResourceMemory: resource.MustParse("8Gi"),
+				},
+			},
+		},
+		&appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: "cattle-cluster-agent", Namespace: "cattle-system"},
+			Spec: appsv1.DeploymentSpec{
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Image: "rancher/rancher-agent:v2.8.0",
+							Env: []corev1.EnvVar{
+								{Name: "CATTLE_INSTALL_UUID", Value: "test-uuid"},
+							},
+						}},
+					},
+				},
+			},
+		},
+	)
+
+	data, err := Collect(context.Background(), clientset, "recommended")
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	// Mode field should be set
+	if data.ExtraFieldInfo["mode"] != "recommended" {
+		t.Errorf("mode = %q, want %q", data.ExtraFieldInfo["mode"], "recommended")
+	}
+
+	// Node counts should have actual values
+	if data.ExtraFieldInfo["serverNodeCount"] != 1 {
+		t.Errorf("serverNodeCount = %v, want 1", data.ExtraFieldInfo["serverNodeCount"])
+	}
+
+	// CPU/memory should have actual values
+	serverCPU, ok := data.ExtraFieldInfo["serverCPU"].(int64)
+	if !ok || serverCPU == 0 {
+		t.Errorf("serverCPU = %v, want non-zero", data.ExtraFieldInfo["serverCPU"])
+	}
+
+	// Rancher details should be present in recommended mode
+	if data.ExtraFieldInfo["rancher-version"] != "v2.8.0" {
+		t.Errorf("rancher-version = %v, want v2.8.0", data.ExtraFieldInfo["rancher-version"])
+	}
+	if data.ExtraFieldInfo["rancher-install-uuid"] != "test-uuid" {
+		t.Errorf("rancher-install-uuid = %v, want test-uuid", data.ExtraFieldInfo["rancher-install-uuid"])
 	}
 }
