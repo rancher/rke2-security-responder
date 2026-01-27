@@ -19,6 +19,7 @@ make install-hooks            # Git pre-commit hooks
 - **charts/rke2-security-responder/**: Helm chart, CronJob runs every 8h
 - Read-only k8s API access via ClusterRole
 - Graceful degradation in disconnected environments
+- Always keep documentation (README.md), charts, code, and tests uptodate and consistent.
 
 ## Logging
 
