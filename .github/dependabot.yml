@@ -1,0 +1,39 @@
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      k8s:
+        patterns:
+          - "k8s.io/*"
+      all-other:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "k8s.io/*"
+    labels:
+      - "kind/dependabot"
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels:
+      - "kind/dependabot"
+    commit-message:
+      prefix: "ci"
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "rancher/hardened-build-base"
+    labels:
+      - "kind/dependabot"
+    commit-message:
+      prefix: "docker"

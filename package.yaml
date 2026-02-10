@@ -1,0 +1,4 @@
+url: https://github.com/rancher/rke2-security-responder.git
+subdirectory: charts/rke2-security-responder
+type: helm
+packageVersion: 01

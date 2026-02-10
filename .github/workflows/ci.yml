@@ -1,0 +1,275 @@
+name: CI
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.25.5'
+
+    - name: Build
+      run: go build -v ./...
+    
+    - name: Test
+      run: go test -v ./...
+    
+    - name: Vet
+      run: go vet ./...
+    
+    - name: Format check
+      run: |
+        if [ -n "$(gofmt -l .)" ]; then
+          echo "Code is not formatted:"
+          gofmt -d .
+          exit 1
+        fi
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.25.5'
+
+    - name: golangci-lint
+      uses: golangci/golangci-lint-action@v9
+      with:
+        version: v2.7.2
+
+  helm:
+    name: Helm Chart Lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    
+    - name: Set up Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.14.0'
+    
+    - name: Lint Helm Chart
+      run: helm lint charts/rke2-security-responder
+    
+    - name: Template Helm Chart
+      run: helm template test-release charts/rke2-security-responder --namespace kube-system
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+    - uses: actions/checkout@v6
+    
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+    
+    - name: Build Docker Image for ${{ matrix.arch }}
+      run: |
+        docker buildx build \
+          --platform linux/${{ matrix.arch }} \
+          --build-arg BUILDARCH=${{ matrix.arch }} \
+          --build-arg TAG=test \
+          --load \
+          -t rke2-security-responder:test-${{ matrix.arch }} \
+          .
+    
+    - name: Check image size
+      run: |
+        docker images rke2-security-responder:test-${{ matrix.arch }} --format "{{.Repository}}:{{.Tag}} - {{.Size}}"
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    needs: [docker]
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build image for scanning
+      run: |
+        docker buildx build \
+          --platform linux/amd64 \
+          --build-arg BUILDARCH=amd64 \
+          --build-arg TAG=scan \
+          --load \
+          -t rke2-security-responder:scan \
+          .
+
+    - name: Run Trivy vulnerability scanner
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: 'rke2-security-responder:scan'
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Run Trivy for SARIF output
+      uses: aquasecurity/trivy-action@master
+      if: always()
+      with:
+        image-ref: 'rke2-security-responder:scan'
+        format: 'sarif'
+        output: 'trivy-results.sarif'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+
+    - name: Upload Trivy scan results
+      uses: github/codeql-action/upload-sarif@v4
+      if: always()
+      with:
+        sarif_file: 'trivy-results.sarif'
+
+  e2e:
+    name: E2E Tests (kind)
+    runs-on: ubuntu-latest
+    needs: [build, helm]
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Set up Helm
+      uses: azure/setup-helm@v4
+      with:
+        version: '3.14.0'
+
+    - name: Create kind cluster
+      uses: helm/kind-action@v1
+      with:
+        cluster_name: e2e-test
+
+    - name: Deploy mock responder endpoint
+      run: |
+        kubectl apply -f - <<EOF
+        apiVersion: v1
+        kind: Pod
+        metadata:
+          name: mock-responder
+          namespace: kube-system
+          labels:
+            app: mock-responder
+        spec:
+          containers:
+          - name: mock
+            image: hashicorp/http-echo
+            args: ["-text={\"versions\":[{\"name\":\"v1.30.1\",\"releaseDate\":\"2024-01-01\"}],\"requestIntervalInMinutes\":480}"]
+            ports:
+            - containerPort: 5678
+        ---
+        apiVersion: v1
+        kind: Service
+        metadata:
+          name: mock-responder
+          namespace: kube-system
+        spec:
+          selector:
+            app: mock-responder
+          ports:
+          - port: 80
+            targetPort: 5678
+        EOF
+        kubectl wait --for=condition=ready pod/mock-responder -n kube-system --timeout=60s
+
+    - name: Build docker image
+      run: |
+        docker build -t rke2-security-responder:e2e \
+          --build-arg TAG=e2e-test \
+          .
+
+    - name: Load image into kind
+      run: kind load docker-image rke2-security-responder:e2e --name e2e-test
+
+    - name: Install helm chart (with mock endpoint)
+      run: |
+        helm upgrade --install rke2-security-responder ./charts/rke2-security-responder \
+          --namespace kube-system \
+          --set image.repository=rke2-security-responder \
+          --set image.tag=e2e \
+          --set check.endpoint="http://mock-responder.kube-system.svc.cluster.local:80" \
+          --wait
+
+    - name: Create and run test job
+      run: |
+        kubectl create job --from=cronjob/rke2-security-responder e2e-test-run -n kube-system
+        kubectl wait --for=condition=complete job/e2e-test-run -n kube-system --timeout=60s
+
+    - name: Verify telemetry send
+      run: |
+        POD_NAME=$(kubectl get pods -n kube-system -l job-name=e2e-test-run -o jsonpath='{.items[0].metadata.name}')
+        kubectl logs -n kube-system "$POD_NAME"
+
+        LOGS=$(kubectl logs -n kube-system "$POD_NAME")
+
+        if ! echo "$LOGS" | grep -q "data sent"; then
+          echo "ERROR: Expected 'data sent' message not found"
+          exit 1
+        fi
+
+        if ! echo "$LOGS" | grep -q "response received"; then
+          echo "ERROR: Expected 'response received' message not found"
+          exit 1
+        fi
+
+        echo "E2E test with mock endpoint passed"
+
+    - name: Test real endpoint (dev flag forced)
+      continue-on-error: true  # Real endpoint may not be available yet
+      run: |
+        # Clean up previous test job
+        kubectl delete job e2e-test-run -n kube-system --ignore-not-found
+
+        # Reconfigure to use real endpoint with dev flag forced
+        helm upgrade rke2-security-responder ./charts/rke2-security-responder \
+          --namespace kube-system \
+          --set image.repository=rke2-security-responder \
+          --set image.tag=e2e \
+          --set check.endpoint="https://security-responder.rke2.io/v1/check" \
+          --set extraEnv[0].name=SECURITY_RESPONDER_DEV \
+          --set extraEnv[0].value="true" \
+          --wait
+
+        # Run test against real endpoint
+        kubectl create job --from=cronjob/rke2-security-responder e2e-real-endpoint -n kube-system
+        kubectl wait --for=condition=complete job/e2e-real-endpoint -n kube-system --timeout=120s
+
+        POD_NAME=$(kubectl get pods -n kube-system -l job-name=e2e-real-endpoint -o jsonpath='{.items[0].metadata.name}')
+        kubectl logs -n kube-system "$POD_NAME"
+
+        LOGS=$(kubectl logs -n kube-system "$POD_NAME")
+
+        if echo "$LOGS" | grep -q "data sent"; then
+          echo "Real endpoint test passed"
+        else
+          echo "Real endpoint test failed (endpoint may not be available yet)"
+          exit 1
+        fi
+

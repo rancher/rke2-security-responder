@@ -1,0 +1,41 @@
+#!/bin/bash
+set -e
+
+echo "Running pre-commit checks..."
+
+STAGED_GO_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' || true)
+
+if [[ -n "${STAGED_GO_FILES}" ]]; then
+    echo "Checking Go files..."
+
+    echo "  go fmt..."
+    UNFORMATTED=$(gofmt -l . || true)
+    if [[ -n "${UNFORMATTED}" ]]; then
+        echo "Error: Go files not formatted. Run 'make fmt'"
+        echo "${UNFORMATTED}"
+        exit 1
+    fi
+
+    echo "  go vet..."
+    go vet ./...
+
+    echo "  golangci-lint..."
+    if command -v golangci-lint &> /dev/null; then
+        golangci-lint run
+    else
+        echo "  Warning: golangci-lint not installed, skipping"
+    fi
+fi
+
+STAGED_HELM_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '^charts/' || true)
+
+if [[ -n "${STAGED_HELM_FILES}" ]]; then
+    echo "Checking Helm chart..."
+    if command -v helm &> /dev/null; then
+        helm lint charts/rke2-security-responder
+    else
+        echo "  Warning: helm not installed, skipping"
+    fi
+fi
+
+echo "Pre-commit checks passed"

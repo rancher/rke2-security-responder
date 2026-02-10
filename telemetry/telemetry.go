@@ -1,0 +1,461 @@
+package telemetry
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/sirupsen/logrus"
+
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+)
+
+const (
+	DefaultEndpoint = "https://security-responder.rke2.io/v1/check"
+	defaultTimeout  = 30 * time.Second
+	maxRetries      = 3
+	retryDelay      = 2 * time.Second
+)
+
+type Data struct {
+	AppVersion     string                 `json:"appVersion"`
+	ExtraTagInfo   map[string]string      `json:"extraTagInfo"`
+	ExtraFieldInfo map[string]interface{} `json:"extraFieldInfo"`
+}
+
+type Response struct {
+	Versions                 []Version `json:"versions"`
+	RequestIntervalInMinutes int       `json:"requestIntervalInMinutes"`
+}
+
+type Version struct {
+	Name                 string            `json:"name"`
+	ReleaseDate          string            `json:"releaseDate"`
+	MinUpgradableVersion string            `json:"minUpgradableVersion,omitempty"`
+	Tags                 []string          `json:"tags,omitempty"`
+	ExtraInfo            map[string]string `json:"extraInfo,omitempty"`
+}
+
+func Collect(ctx context.Context, clientset kubernetes.Interface, mode string) (*Data, error) {
+	data := &Data{
+		ExtraTagInfo:   make(map[string]string),
+		ExtraFieldInfo: make(map[string]interface{}),
+	}
+	data.ExtraFieldInfo["mode"] = mode
+	isMinimal := mode == "minimal"
+
+	logrus.Debug("collecting server version")
+	versionInfo, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get server version: %w", err)
+	}
+	data.AppVersion = versionInfo.GitVersion
+	data.ExtraTagInfo["kubernetesVersion"] = versionInfo.GitVersion
+	logrus.WithField("version", versionInfo.GitVersion).Debug("collected version")
+
+	logrus.Debug("collecting cluster UUID from kube-system namespace")
+	namespace, err := clientset.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get kube-system namespace: %w", err)
+	}
+	data.ExtraTagInfo["clusteruuid"] = string(namespace.UID)
+	logrus.WithField("uuid", namespace.UID).Debug("collected cluster UUID")
+
+	logrus.Debug("collecting node information")
+	nodes, err := clientset.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	var serverNodeCount, agentNodeCount, gpuNodeCount int
+	var serverCPU, agentCPU, serverMemory, agentMemory int64
+	var operatingSystem, osImage, kernelVersion, arch, selinuxInfo, gpuVendor string
+
+	gpuResources := []corev1.ResourceName{"nvidia.com/gpu", "amd.com/gpu", "intel.com/gpu"}
+	gpuVendorMap := map[corev1.ResourceName]string{
+		"nvidia.com/gpu": "nvidia",
+		"amd.com/gpu":    "amd",
+		"intel.com/gpu":  "intel",
+	}
+
+	for _, node := range nodes.Items {
+		cpu := node.Status.Allocatable.Cpu().MilliValue()
+		mem := node.Status.Allocatable.Memory().Value()
+		if isControlPlaneNode(&node) {
+			serverNodeCount++
+			serverCPU += cpu
+			serverMemory += mem
+		} else {
+			agentNodeCount++
+			agentCPU += cpu
+			agentMemory += mem
+		}
+		if osImage == "" {
+			operatingSystem = node.Status.NodeInfo.OperatingSystem
+			osImage = node.Status.NodeInfo.OSImage
+			kernelVersion = node.Status.NodeInfo.KernelVersion
+			arch = node.Status.NodeInfo.Architecture
+		}
+		if selinuxInfo == "" {
+			selinuxInfo = getSELinuxStatus(&node)
+		}
+		for _, res := range gpuResources {
+			if qty, ok := node.Status.Allocatable[res]; ok {
+				if count, _ := qty.AsInt64(); count > 0 {
+					gpuNodeCount++
+					if gpuVendor == "" {
+						gpuVendor = gpuVendorMap[res]
+					}
+					break
+				}
+			}
+		}
+	}
+
+	if isMinimal {
+		data.ExtraFieldInfo["serverNodeCount"] = -1
+		data.ExtraFieldInfo["agentNodeCount"] = -1
+		data.ExtraFieldInfo["gpuNodeCount"] = -1
+		data.ExtraFieldInfo["serverCPU"] = int64(-1)
+		data.ExtraFieldInfo["agentCPU"] = int64(-1)
+		data.ExtraFieldInfo["serverMemory"] = int64(-1)
+		data.ExtraFieldInfo["agentMemory"] = int64(-1)
+	} else {
+		data.ExtraFieldInfo["serverNodeCount"] = serverNodeCount
+		data.ExtraFieldInfo["agentNodeCount"] = agentNodeCount
+		data.ExtraFieldInfo["serverCPU"] = serverCPU
+		data.ExtraFieldInfo["agentCPU"] = agentCPU
+		data.ExtraFieldInfo["serverMemory"] = serverMemory
+		data.ExtraFieldInfo["agentMemory"] = agentMemory
+		data.ExtraFieldInfo["gpuNodeCount"] = gpuNodeCount
+	}
+	data.ExtraFieldInfo["operating-system"] = operatingSystem
+	data.ExtraFieldInfo["os"] = osImage
+	data.ExtraFieldInfo["kernel"] = kernelVersion
+	data.ExtraFieldInfo["arch"] = arch
+	data.ExtraFieldInfo["selinux"] = selinuxInfo
+	if gpuVendor != "" {
+		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
+	}
+	logrus.WithFields(logrus.Fields{
+		"server":       serverNodeCount,
+		"agent":        agentNodeCount,
+		"serverCPU":    serverCPU,
+		"agentCPU":     agentCPU,
+		"serverMemory": serverMemory,
+		"agentMemory":  agentMemory,
+		"gpuNodeCount": gpuNodeCount,
+	}).Debug("collected nodes")
+
+	logrus.Debug("collecting kube-system workloads")
+	kubeSystemDS, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list kube-system daemonsets: %w", err)
+	}
+	kubeSystemDeploy, err := clientset.AppsV1().Deployments("kube-system").List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list kube-system deployments: %w", err)
+	}
+
+	logrus.Debug("detecting CNI plugin")
+	cniPlugin, cniVersion := detectCNIPlugin(kubeSystemDS.Items)
+	data.ExtraFieldInfo["cni-plugin"] = cniPlugin
+	if cniVersion != "" {
+		data.ExtraFieldInfo["cni-version"] = cniVersion
+	}
+	logrus.WithFields(logrus.Fields{"plugin": cniPlugin, "version": cniVersion}).Debug("detected CNI")
+
+	logrus.Debug("detecting ingress controller")
+	ingressController, ingressVersion := detectIngressController(kubeSystemDeploy.Items, kubeSystemDS.Items)
+	data.ExtraFieldInfo["ingress-controller"] = ingressController
+	if ingressVersion != "" {
+		data.ExtraFieldInfo["ingress-version"] = ingressVersion
+	}
+	logrus.WithFields(logrus.Fields{"controller": ingressController, "version": ingressVersion}).Debug("detected ingress")
+
+	logrus.Debug("detecting GPU operator")
+	gpuOperator, gpuOperatorVersion := detectGPUOperator(ctx, clientset)
+	if gpuOperator != "none" {
+		data.ExtraFieldInfo["gpu-operator"] = gpuOperator
+		if gpuOperatorVersion != "" {
+			data.ExtraFieldInfo["gpu-operator-version"] = gpuOperatorVersion
+		}
+	}
+	logrus.WithFields(logrus.Fields{"operator": gpuOperator, "version": gpuOperatorVersion}).Debug("detected GPU operator")
+
+	logrus.Debug("detecting Rancher Manager")
+	rancherManaged, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset)
+	data.ExtraFieldInfo["rancher-managed"] = rancherManaged
+	if isMinimal {
+		data.ExtraFieldInfo["rancher-version"] = ""
+		data.ExtraFieldInfo["rancher-install-uuid"] = ""
+	} else {
+		if rancherVersion != "" {
+			data.ExtraFieldInfo["rancher-version"] = rancherVersion
+		}
+		if rancherInstallUUID != "" {
+			data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
+		}
+	}
+	logrus.WithFields(logrus.Fields{"managed": rancherManaged, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
+
+	logrus.Debug("detecting IP stack configuration")
+	ipStack := detectIPStack(ctx, clientset)
+	data.ExtraFieldInfo["ip-stack"] = ipStack
+	logrus.WithField("ip-stack", ipStack).Debug("detected IP stack")
+
+	return data, nil
+}
+
+func Send(ctx context.Context, data *Data, endpoint string) (*Response, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal data: %w", err)
+	}
+
+	logrus.WithField("endpoint", endpoint).Info("sending data")
+	logrus.WithField("size", len(jsonData)).Debug("request payload")
+
+	client := &http.Client{Timeout: defaultTimeout}
+
+	var lastErr error
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		if attempt > 1 {
+			delay := time.Duration(attempt-1) * retryDelay
+			logrus.WithFields(logrus.Fields{"attempt": attempt, "max": maxRetries, "delay": delay}).Info("retrying")
+			time.Sleep(delay)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, "POST", endpoint, bytes.NewBuffer(jsonData))
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("failed to send request: %w", err)
+			logrus.WithField("attempt", attempt).WithError(lastErr).Warn("attempt failed")
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response: %w", err)
+			logrus.WithField("attempt", attempt).WithError(lastErr).Warn("attempt failed")
+			continue
+		}
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			logrus.WithField("attempt", attempt).WithError(lastErr).Warn("attempt failed")
+			continue
+		}
+
+		var response Response
+		if err := json.Unmarshal(body, &response); err != nil {
+			logrus.WithError(err).Warn("failed to parse response")
+			logrus.WithField("attempt", attempt).Info("data sent")
+			return nil, nil
+		}
+
+		logrus.WithFields(logrus.Fields{"versions": len(response.Versions), "intervalMinutes": response.RequestIntervalInMinutes}).Info("response received")
+		for _, v := range response.Versions {
+			logrus.WithFields(logrus.Fields{"name": v.Name, "releaseDate": v.ReleaseDate, "tags": v.Tags}).Info("available version")
+			if len(v.ExtraInfo) > 0 {
+				logrus.WithField("extraInfo", v.ExtraInfo).Info("version extra info")
+			}
+		}
+
+		logrus.WithField("attempt", attempt).Info("data sent")
+		return &response, nil
+	}
+
+	return nil, lastErr
+}
+
+func isControlPlaneNode(node *corev1.Node) bool {
+	_, hasControlPlaneLabel := node.Labels["node-role.kubernetes.io/control-plane"]
+	_, hasMasterLabel := node.Labels["node-role.kubernetes.io/master"]
+	return hasControlPlaneLabel || hasMasterLabel
+}
+
+// getSELinuxStatus determines SELinux status from node labels.
+// SELinux detection is limited from within containers; this is a best-effort
+// approach. Returns "unknown" if not determinable.
+func getSELinuxStatus(node *corev1.Node) string {
+	if selinux, ok := node.Labels["security.alpha.kubernetes.io/selinux"]; ok {
+		if selinux == "enabled" {
+			return "enabled"
+		}
+		return "disabled"
+	}
+	return "unknown"
+}
+
+func extractImageVersion(image string) string {
+	if idx := strings.LastIndex(image, ":"); idx != -1 {
+		tag := image[idx+1:]
+		if atIdx := strings.Index(tag, "@"); atIdx != -1 {
+			tag = tag[:atIdx]
+		}
+		return tag
+	}
+	return ""
+}
+
+func detectCNIPlugin(daemonSets []appsv1.DaemonSet) (string, string) {
+	cniPatterns := map[string]string{
+		"canal":   "canal",
+		"flannel": "flannel",
+		"calico":  "calico",
+		"cilium":  "cilium",
+		"weave":   "weave",
+	}
+
+	for _, ds := range daemonSets {
+		name := strings.ToLower(ds.Name)
+		for pattern, cniName := range cniPatterns {
+			if strings.Contains(name, pattern) {
+				version := ""
+				if len(ds.Spec.Template.Spec.Containers) > 0 {
+					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
+				}
+				return cniName, version
+			}
+		}
+	}
+
+	return "unknown", ""
+}
+
+func detectIngressController(deployments []appsv1.Deployment, daemonSets []appsv1.DaemonSet) (string, string) {
+	for _, deploy := range deployments {
+		name := strings.ToLower(deploy.Name)
+		var ingressName string
+		switch {
+		case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
+			ingressName = "rke2-ingress-nginx"
+		case strings.Contains(name, "traefik"):
+			ingressName = "traefik"
+		}
+		if ingressName != "" {
+			version := ""
+			if len(deploy.Spec.Template.Spec.Containers) > 0 {
+				version = extractImageVersion(deploy.Spec.Template.Spec.Containers[0].Image)
+			}
+			return ingressName, version
+		}
+	}
+
+	for _, ds := range daemonSets {
+		name := strings.ToLower(ds.Name)
+		var ingressName string
+		switch {
+		case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
+			ingressName = "rke2-ingress-nginx"
+		case strings.Contains(name, "traefik"):
+			ingressName = "traefik"
+		}
+		if ingressName != "" {
+			version := ""
+			if len(ds.Spec.Template.Spec.Containers) > 0 {
+				version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
+			}
+			return ingressName, version
+		}
+	}
+
+	return "none", ""
+}
+
+func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (string, string) {
+	gpuNamespaces := map[string]string{
+		"gpu-operator":              "nvidia-gpu-operator",
+		"kube-amd-gpu":              "amd-gpu-operator",
+		"inteldeviceplugins-system": "intel-device-plugins",
+	}
+
+	for ns, operator := range gpuNamespaces {
+		daemonSets, err := clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			continue
+		}
+		for _, ds := range daemonSets.Items {
+			name := strings.ToLower(ds.Name)
+			if strings.Contains(name, "device-plugin") || strings.Contains(name, "driver") {
+				version := ""
+				if len(ds.Spec.Template.Spec.Containers) > 0 {
+					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
+				}
+				return operator, version
+			}
+		}
+	}
+
+	return "none", ""
+}
+
+func detectRancherManager(ctx context.Context, clientset kubernetes.Interface) (managed bool, version, installUUID string) {
+	_, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{})
+	if err != nil {
+		return false, "", ""
+	}
+
+	deploy, err := clientset.AppsV1().Deployments("cattle-system").Get(ctx, "cattle-cluster-agent", metav1.GetOptions{})
+	if err != nil {
+		return true, "", ""
+	}
+
+	if len(deploy.Spec.Template.Spec.Containers) > 0 {
+		container := deploy.Spec.Template.Spec.Containers[0]
+		version = extractImageVersion(container.Image)
+		for _, env := range container.Env {
+			if env.Name == "CATTLE_INSTALL_UUID" && env.Value != "" {
+				installUUID = env.Value
+				break
+			}
+		}
+	}
+	return true, version, installUUID
+}
+
+// detectIPStack determines the cluster's IP stack configuration from the kubernetes service.
+func detectIPStack(ctx context.Context, clientset kubernetes.Interface) string {
+	kubeSvc, err := clientset.CoreV1().Services("default").Get(ctx, "kubernetes", metav1.GetOptions{})
+	if err != nil {
+		logrus.WithError(err).Warn("failed to get kubernetes service for IP stack detection")
+		return "unknown"
+	}
+	if len(kubeSvc.Spec.IPFamilies) == 0 {
+		return "unknown"
+	}
+	hasIPv4, hasIPv6 := false, false
+	for _, f := range kubeSvc.Spec.IPFamilies {
+		switch f {
+		case corev1.IPv4Protocol:
+			hasIPv4 = true
+		case corev1.IPv6Protocol:
+			hasIPv6 = true
+		}
+	}
+	switch {
+	case hasIPv4 && hasIPv6:
+		return "dual-stack"
+	case hasIPv4:
+		return "ipv4-only"
+	case hasIPv6:
+		return "ipv6-only"
+	default:
+		return "unknown"
+	}
+}
