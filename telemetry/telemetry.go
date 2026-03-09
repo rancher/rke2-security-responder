@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	DefaultEndpoint = "https://security-responder.rke2.io/v1/check"
+	DefaultEndpoint = "https://security-responder.rke2.io/v1/checkupgrade"
 	defaultTimeout  = 30 * time.Second
 	maxRetries      = 3
 	retryDelay      = 2 * time.Second
