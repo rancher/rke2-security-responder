@@ -59,6 +59,7 @@ kind load docker-image "${IMAGE_NAME}" --name "${CLUSTER_NAME}"
 echo "=== Installing helm chart (with mock endpoint) ==="
 helm upgrade --install rke2-security-responder "${ROOT_DIR}/charts/rke2-security-responder" \
     --namespace kube-system \
+    --set enabled=true \
     --set image.repository=rke2-security-responder \
     --set image.tag=e2e \
     --set check.endpoint="http://mock-responder.kube-system.svc.cluster.local:80" \

@@ -68,7 +68,7 @@ jobs:
       run: helm lint charts/rke2-security-responder
     
     - name: Template Helm Chart
-      run: helm template test-release charts/rke2-security-responder --namespace kube-system
+      run: helm template test-release charts/rke2-security-responder --namespace kube-system --set enabled=true
 
   docker:
     name: Docker Build
@@ -212,6 +212,7 @@ jobs:
       run: |
         helm upgrade --install rke2-security-responder ./charts/rke2-security-responder \
           --namespace kube-system \
+          --set enabled=true \
           --set image.repository=rke2-security-responder \
           --set image.tag=e2e \
           --set check.endpoint="http://mock-responder.kube-system.svc.cluster.local:80" \
@@ -250,9 +251,10 @@ jobs:
         # Reconfigure to use real endpoint with dev flag forced
         helm upgrade rke2-security-responder ./charts/rke2-security-responder \
           --namespace kube-system \
+          --set enabled=true \
           --set image.repository=rke2-security-responder \
           --set image.tag=e2e \
-          --set check.endpoint="https://security-responder.rke2.io/v1/check" \
+          --set check.endpoint="https://security-responder.rke2.io/v1/checkupgrade" \
           --set extraEnv[0].name=SECURITY_RESPONDER_DEV \
           --set extraEnv[0].value="true" \
           --wait
