@@ -86,6 +86,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, mode string) (
 		"intel.com/gpu":  "intel",
 	}
 
+	nodeInfoConsistent := true
 	for _, node := range nodes.Items {
 		cpu := node.Status.Allocatable.Cpu().MilliValue()
 		mem := node.Status.Allocatable.Memory().Value()
@@ -103,6 +104,11 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, mode string) (
 			osImage = node.Status.NodeInfo.OSImage
 			kernelVersion = node.Status.NodeInfo.KernelVersion
 			arch = node.Status.NodeInfo.Architecture
+		} else if node.Status.NodeInfo.OperatingSystem != operatingSystem ||
+			node.Status.NodeInfo.OSImage != osImage ||
+			node.Status.NodeInfo.KernelVersion != kernelVersion ||
+			node.Status.NodeInfo.Architecture != arch {
+			nodeInfoConsistent = false
 		}
 		if selinuxInfo == "" {
 			selinuxInfo = getSELinuxStatus(&node)
@@ -142,6 +148,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, mode string) (
 	data.ExtraFieldInfo["kernel"] = kernelVersion
 	data.ExtraFieldInfo["arch"] = arch
 	data.ExtraFieldInfo["selinux"] = selinuxInfo
+	data.ExtraFieldInfo["node-info-consistent"] = nodeInfoConsistent
 	if gpuVendor != "" {
 		data.ExtraFieldInfo["gpu-vendor"] = gpuVendor
 	}

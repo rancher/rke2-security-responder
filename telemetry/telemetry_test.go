@@ -190,6 +190,49 @@ func TestCollect_BasicCluster(t *testing.T) {
 	if data.ExtraFieldInfo["arch"] != "amd64" {
 		t.Errorf("arch = %v, want amd64", data.ExtraFieldInfo["arch"])
 	}
+	if data.ExtraFieldInfo["node-info-consistent"] != true {
+		t.Errorf("node-info-consistent = %v, want true", data.ExtraFieldInfo["node-info-consistent"])
+	}
+}
+
+func TestCollect_NodeInfoInconsistent(t *testing.T) {
+	clientset := fake.NewClientset(
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "kube-system", UID: "uuid"}},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   "server-1",
+				Labels: map[string]string{"node-role.kubernetes.io/control-plane": ""},
+			},
+			Status: corev1.NodeStatus{
+				NodeInfo: corev1.NodeSystemInfo{
+					OperatingSystem: "linux",
+					OSImage:         "Ubuntu 22.04",
+					KernelVersion:   "5.15.0",
+					Architecture:    "amd64",
+				},
+			},
+		},
+		&corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{Name: "agent-1"},
+			Status: corev1.NodeStatus{
+				NodeInfo: corev1.NodeSystemInfo{
+					OperatingSystem: "linux",
+					OSImage:         "SLES 15 SP6",
+					KernelVersion:   "6.4.0",
+					Architecture:    "amd64",
+				},
+			},
+		},
+	)
+
+	data, err := Collect(context.Background(), clientset, "recommended")
+	if err != nil {
+		t.Fatalf("Collect() error = %v", err)
+	}
+
+	if data.ExtraFieldInfo["node-info-consistent"] != false {
+		t.Errorf("node-info-consistent = %v, want false", data.ExtraFieldInfo["node-info-consistent"])
+	}
 }
 
 func TestCollect_CNIDetection(t *testing.T) {

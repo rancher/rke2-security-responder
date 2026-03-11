@@ -31,7 +31,7 @@ Based on [ADR 010-security-responder](https://github.com/rancher/rke2/blob/maste
   - Node counts, CPU (millicores), and memory (bytes) for control plane and agent nodes
   - CNI plugin in use
   - Ingress controller in use
-  - Operating system, OS image, kernel version, architecture
+  - Operating system, OS image, kernel version, architecture (from the first node; a consistency flag indicates whether all nodes match)
   - SELinux status
   - GPU node count, vendor, and operator (if present)
   - Rancher Manager status, version, and install UUID (if managed)
@@ -56,7 +56,7 @@ the `minimal` setting instead.
 
 **Minimal mode** collects only:
 - Kubernetes version and cluster UUID
-- OS, kernel, architecture, SELinux status
+- OS, kernel, architecture, SELinux status, node info consistency
 - CNI plugin, ingress controller, IP stack configuration
 - GPU presence and vendor
 - Whether Rancher manages the cluster (boolean only)
@@ -89,6 +89,7 @@ Example recommended payload structure:
     "os": "SLE Micro 6.1",
     "kernel": "6.4.0-150600.23.47-default",
     "arch": "amd64",
+    "node-info-consistent": true,
     "selinux": "enabled",
     "cni-plugin": "cilium",
     "cni-version": "v1.16.5",
