@@ -36,6 +36,9 @@ if [[ -n "${STAGED_HELM_FILES}" ]]; then
     else
         echo "  Warning: helm not installed, skipping"
     fi
+
+    echo "  chart version consistency..."
+    ./scripts/check-chart-version.sh
 fi
 
 echo "Pre-commit checks passed"
