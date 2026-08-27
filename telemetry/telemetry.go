@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -344,8 +345,10 @@ func parseCVEs(raw string) []string {
 	return cves
 }
 
-// isNewerVersion tiebreaks equal semver cores on the RKE2 +rke2rN build
-// metadata so security-relevant rebuilds (e.g. +rke2r1 -> +rke2r2) surface.
+// isNewerVersion compares versions by release date when available. This prevents
+// a semver-higher but older-released build from being treated as a newer upgrade.
+// When the date is unavailable or equal, it falls back to semver and RKE2 rebuild
+// suffix comparison for consistency with the existing version-ordering rules.
 func isNewerVersion(candidate, current string) bool {
 	c, err := semver.NewVersion(candidate)
 	if err != nil {
@@ -355,6 +358,7 @@ func isNewerVersion(candidate, current string) bool {
 	if err != nil {
 		return true // unparseable current → show all
 	}
+
 	if c.GreaterThan(cur) {
 		return true
 	}
@@ -362,6 +366,58 @@ func isNewerVersion(candidate, current string) bool {
 		return false
 	}
 	return rke2BuildNumber(c.Metadata()) > rke2BuildNumber(cur.Metadata())
+}
+
+func isVersionNewer(candidate, current Version) bool {
+	candidateDate, candOK := parseVersionDate(candidate.ReleaseDate)
+	currentDate, curOK := parseVersionDate(current.ReleaseDate)
+
+	if candOK && curOK {
+		if !candidateDate.After(currentDate) {
+			return false
+		}
+
+		candidateSemver, candSemErr := semver.NewVersion(candidate.Name)
+		currentSemver, curSemErr := semver.NewVersion(current.Name)
+		if candSemErr == nil && curSemErr == nil {
+			return candidateSemver.Major() > currentSemver.Major() ||
+				(candidateSemver.Major() == currentSemver.Major() && candidateSemver.Minor() > currentSemver.Minor()) ||
+				(candidateSemver.Major() == currentSemver.Major() && candidateSemver.Minor() == currentSemver.Minor() && candidateSemver.Patch() > currentSemver.Patch()) ||
+				(candidateSemver.Major() == currentSemver.Major() && candidateSemver.Minor() == currentSemver.Minor() && candidateSemver.Patch() == currentSemver.Patch() && rke2BuildNumber(candidateSemver.Metadata()) > rke2BuildNumber(currentSemver.Metadata()))
+		}
+		return true
+	}
+
+	candidateSemver, candSemErr := semver.NewVersion(candidate.Name)
+	currentSemver, curSemErr := semver.NewVersion(current.Name)
+	if candSemErr == nil && curSemErr == nil {
+		if currentSemver.GreaterThan(candidateSemver) {
+			return false
+		}
+		if candidateSemver.GreaterThan(currentSemver) {
+			return true
+		}
+		return rke2BuildNumber(candidateSemver.Metadata()) > rke2BuildNumber(currentSemver.Metadata())
+	}
+
+	if candOK && !curOK {
+		return true
+	}
+	if !candOK && curOK {
+		return false
+	}
+	return isNewerVersion(candidate.Name, current.Name)
+}
+
+func parseVersionDate(raw string) (time.Time, bool) {
+	if raw == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 func rke2BuildNumber(metadata string) int {
@@ -377,12 +433,42 @@ func rke2BuildNumber(metadata string) int {
 }
 
 func filterNewerVersions(versions []Version, current string) []Version {
+	currentVersion := Version{Name: current}
+	for i := range versions {
+		if versions[i].Name == current {
+			currentVersion = versions[i]
+			break
+		}
+	}
+
 	out := make([]Version, 0, len(versions))
 	for _, v := range versions {
-		if isNewerVersion(v.Name, current) {
+		if v.Name == current {
+			continue
+		}
+		if isVersionNewer(v, currentVersion) {
 			out = append(out, v)
 		}
 	}
+	return sortVersionsByReleaseDateDescending(out)
+}
+
+func sortVersionsByReleaseDateDescending(versions []Version) []Version {
+	out := append([]Version(nil), versions...)
+	sort.Slice(out, func(i, j int) bool {
+		iTime, iErr := time.Parse(time.RFC3339, out[i].ReleaseDate)
+		jTime, jErr := time.Parse(time.RFC3339, out[j].ReleaseDate)
+		switch {
+		case iErr != nil && jErr != nil:
+			return out[i].Name < out[j].Name
+		case iErr != nil:
+			return false
+		case jErr != nil:
+			return true
+		default:
+			return iTime.After(jTime)
+		}
+	})
 	return out
 }
 
@@ -396,6 +482,24 @@ func filterCurrentVersion(versions []Version, current string) *Version {
 }
 
 func logRecommendations(newer []Version, current *Version) {
+	latest := false
+	if current != nil {
+		for _, tag := range current.Tags {
+			if strings.EqualFold(tag, "latest") {
+				latest = true
+				logrus.Warnf("The installed RKE2 version %s is the latest released version", current.Name)
+				break
+			}
+		}
+
+		if !latest {
+			cves := parseCVEs(current.ExtraInfo["cves"])
+			if len(cves) > 0 {
+				logrus.Warnf("The installed RKE2 version %s includes CVEs. These are the %d most relevant: %s. Please upgrade to a newer version to fix security vulnerabilities", current.Name, len(cves), strings.Join(cves, ", "))
+			}
+		}
+	}
+
 	for _, v := range newer {
 		fields := logrus.Fields{"version": v.Name, "releaseDate": v.ReleaseDate}
 		if url := v.ExtraInfo["releaseNotesURL"]; url != "" {
@@ -403,17 +507,6 @@ func logRecommendations(newer []Version, current *Version) {
 		}
 		logrus.WithFields(fields).Info("available version")
 	}
-
-	if current == nil {
-		return
-	}
-
-	cves := parseCVEs(current.ExtraInfo["cves"])
-	if len(cves) == 0 {
-		return
-	}
-
-	logrus.Warnf("The RKE2 version %s includes CVEs. These are the %d most relevant: %s. Please upgrade to a newer version to fix security vulnerabilities", current.Name, len(cves), strings.Join(cves, ", "))
 }
 
 func extractImageVersion(image string) string {

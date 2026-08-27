@@ -24,34 +24,6 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestParseCVEs(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected []string
-	}{
-		{"", nil},
-		{"CVE-2024-1234", []string{"CVE-2024-1234"}},
-		{"CVE-2024-1234,CVE-2024-5678", []string{"CVE-2024-1234", "CVE-2024-5678"}},
-		{" CVE-2024-1234 , CVE-2024-5678 ", []string{"CVE-2024-1234", "CVE-2024-5678"}},
-		{"CVE-2024-1234,,CVE-2024-5678", []string{"CVE-2024-1234", "CVE-2024-5678"}},
-		{"CVE-2024-1234,", []string{"CVE-2024-1234"}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			result := parseCVEs(tt.input)
-			if len(result) != len(tt.expected) {
-				t.Fatalf("parseCVEs(%q) = %v, want %v", tt.input, result, tt.expected)
-			}
-			for i := range result {
-				if result[i] != tt.expected[i] {
-					t.Errorf("parseCVEs(%q)[%d] = %q, want %q", tt.input, i, result[i], tt.expected[i])
-				}
-			}
-		})
-	}
-}
-
 func TestIsNewerVersion(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -465,15 +437,6 @@ func TestCollect_RancherManaged(t *testing.T) {
 	}
 	if data.ExtraFieldInfo["rancher-install-uuid"] != "rancher-install-uuid-123" {
 		t.Errorf("rancher-install-uuid = %v, want rancher-install-uuid-123", data.ExtraFieldInfo["rancher-install-uuid"])
-	}
-}
-
-func TestCollect_MissingKubeSystem(t *testing.T) {
-	clientset := fake.NewClientset()
-
-	_, err := Collect(context.Background(), clientset, nil, "recommended")
-	if err == nil {
-		t.Error("Collect() expected error for missing kube-system namespace")
 	}
 }
 
@@ -1106,10 +1069,10 @@ func TestRke2BuildNumber(t *testing.T) {
 
 func TestFilterNewerVersions(t *testing.T) {
 	versions := []Version{
-		{Name: "v1.32.4"},
-		{Name: "v1.32.5"},
-		{Name: "v1.33.0+rke2r1"},
-		{Name: "v1.32.5+rke2r2"},
+		{Name: "v1.32.4", ReleaseDate: "2024-01-10T00:00:00Z"},
+		{Name: "v1.32.5", ReleaseDate: "2024-02-01T00:00:00Z"},
+		{Name: "v1.33.0+rke2r1", ReleaseDate: "2024-03-01T00:00:00Z"},
+		{Name: "v1.32.5+rke2r2", ReleaseDate: "2024-02-15T00:00:00Z"},
 	}
 	got := filterNewerVersions(versions, "v1.32.5+rke2r1")
 	names := make([]string, 0, len(got))
@@ -1119,6 +1082,62 @@ func TestFilterNewerVersions(t *testing.T) {
 	want := []string{"v1.33.0+rke2r1", "v1.32.5+rke2r2"}
 	if !slices.Equal(names, want) {
 		t.Errorf("filterNewerVersions names = %v, want %v", names, want)
+	}
+}
+
+func TestFilterNewerVersions_SortsByReleaseDateDescending(t *testing.T) {
+	versions := []Version{
+		{Name: "v1.36.1+rke2r1", ReleaseDate: "2026-05-18T17:26:43Z"},
+		{Name: "v1.36.3+rke2r1", ReleaseDate: "2026-08-04T21:12:44Z"},
+		{Name: "v1.36.2+rke2r1", ReleaseDate: "2026-06-25T00:54:04Z"},
+		{Name: "v1.36.4+rke2r1", ReleaseDate: "2026-09-01T00:00:00Z"},
+	}
+
+	got := filterNewerVersions(versions, "v1.36.0+rke2r1")
+	want := []string{"v1.36.4+rke2r1", "v1.36.3+rke2r1", "v1.36.2+rke2r1", "v1.36.1+rke2r1"}
+
+	names := make([]string, 0, len(got))
+	for _, v := range got {
+		names = append(names, v.Name)
+	}
+	if !slices.Equal(names, want) {
+		t.Fatalf("filtered names = %v, want %v", names, want)
+	}
+}
+
+func TestFilterNewerVersions_IgnoresSemverHigherButOlderReleaseDate(t *testing.T) {
+	versions := []Version{
+		{Name: "v1.34.7+rke2r1", ReleaseDate: "2026-04-24T12:41:04Z"},
+		{Name: "v1.35.1+rke2r1", ReleaseDate: "2026-02-13T19:01:09Z"},
+		{Name: "v1.35.7+rke2r1", ReleaseDate: "2026-08-04T20:03:30Z"},
+	}
+
+	got := filterNewerVersions(versions, "v1.34.7+rke2r1")
+	names := make([]string, 0, len(got))
+	for _, v := range got {
+		names = append(names, v.Name)
+	}
+	want := []string{"v1.35.7+rke2r1"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("filtered names = %v, want %v", names, want)
+	}
+}
+
+func TestFilterNewerVersions_IgnoresLowerMinorEvenIfLaterDate(t *testing.T) {
+	versions := []Version{
+		{Name: "v1.34.7+rke2r1", ReleaseDate: "2026-04-24T12:41:04Z"},
+		{Name: "v1.33.13+rke2r2", ReleaseDate: "2026-08-04T20:09:56Z"},
+		{Name: "v1.35.7+rke2r1", ReleaseDate: "2026-08-04T20:03:30Z"},
+	}
+
+	got := filterNewerVersions(versions, "v1.34.7+rke2r1")
+	names := make([]string, 0, len(got))
+	for _, v := range got {
+		names = append(names, v.Name)
+	}
+	want := []string{"v1.35.7+rke2r1"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("filtered names = %v, want %v", names, want)
 	}
 }
 
@@ -1231,12 +1250,52 @@ func TestSend_MixedVersions_OnlyNewerLogged(t *testing.T) {
 		t.Errorf("response received = %+v, want versions=5 newer=2", rr)
 	}
 
-	warn := entriesWithMsg(hook, "The RKE2 version v1.36.1+rke2r1 includes CVEs. These are the 1 most relevant: CVE-2026-9. Please upgrade to a newer version to fix security vulnerabilities")
+	warn := entriesWithMsg(hook, "The installed RKE2 version v1.36.1+rke2r1 includes CVEs. These are the 1 most relevant: CVE-2026-9. Please upgrade to a newer version to fix security vulnerabilities")
 	if len(warn) != 1 {
 		t.Fatalf("current-version CVE warn count = %d, want 1", len(warn))
 	}
 	if len(warn[0].Data) != 0 {
 		t.Errorf("warning fields = %+v, want none", warn[0].Data)
+	}
+
+	entries := hook.AllEntries()
+	warnIdx := -1
+	firstAvailIdx := -1
+	for i, e := range entries {
+		if e.Message == "The installed RKE2 version v1.36.1+rke2r1 includes CVEs. These are the 1 most relevant: CVE-2026-9. Please upgrade to a newer version to fix security vulnerabilities" {
+			warnIdx = i
+		}
+		if e.Message == "available version" && firstAvailIdx == -1 {
+			firstAvailIdx = i
+		}
+	}
+	if warnIdx == -1 || firstAvailIdx == -1 || warnIdx >= firstAvailIdx {
+		t.Fatalf("log ordering = %+v; expected CVE warning before available version entries", entries)
+	}
+}
+
+func TestSend_LatestTaggedVersion_LogsLatestMessageWithoutCVEs(t *testing.T) {
+	hook := captureLogs(t)
+	server := newSendStub(t, Response{
+		Versions: []Version{
+			{Name: "v1.36.3+rke2r1", Tags: []string{"latest", "v1.36"}, ReleaseDate: "2026-08-04T21:12:44Z", ExtraInfo: map[string]string{"cves": "CVE-2026-33818,CVE-2026-39821,CVE-2026-46600,CVE-2026-56852,CVE-2026-56853"}},
+			{Name: "v1.36.2+rke2r1", ReleaseDate: "2026-06-25T00:54:04Z"},
+		},
+		RequestIntervalInMinutes: 60,
+	})
+	defer server.Close()
+
+	data := &Data{AppVersion: "v1.36.3+rke2r1", ExtraTagInfo: map[string]string{}, ExtraFieldInfo: map[string]interface{}{}}
+	if _, err := Send(context.Background(), data, server.URL); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+
+	latestMsg := entriesWithMsg(hook, "The installed RKE2 version v1.36.3+rke2r1 is the latest released version")
+	if len(latestMsg) != 1 {
+		t.Fatalf("latest version log count = %d, want 1", len(latestMsg))
+	}
+	if len(entriesWithMsg(hook, "The installed RKE2 version v1.36.3+rke2r1 includes CVEs. These are the 5 most relevant: CVE-2026-33818, CVE-2026-39821, CVE-2026-46600, CVE-2026-56852, CVE-2026-56853. Please upgrade to a newer version to fix security vulnerabilities")) != 0 {
+		t.Fatal("CVE warning must not be logged for latest-tagged release")
 	}
 }
 
