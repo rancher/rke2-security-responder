@@ -2,8 +2,8 @@ apiVersion: v2
 name: rke2-security-responder
 description: RKE2 Security Responder for in-cluster CVE/security notifications and telemetry
 type: application
-version: 0.1.4
-appVersion: "0.1.4"
+version: 0.1.5
+appVersion: "0.1.5"
 keywords:
   - rke2
   - security

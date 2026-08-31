@@ -21,7 +21,7 @@ mode: "recommended"
 # Image configuration
 image:
   repository: rancher/rke2-security-responder
-  tag: v0.1.4
+  tag: v0.1.5
   pullPolicy: IfNotPresent
 
 # CronJob schedule - runs thrice daily (every 8 hours)
