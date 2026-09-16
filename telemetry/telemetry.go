@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,11 +36,18 @@ const (
 	retryDelay      = 2 * time.Second
 )
 
-var helmChartGVR = schema.GroupVersionResource{
-	Group:    "helm.cattle.io",
-	Version:  "v1",
-	Resource: "helmcharts",
-}
+var (
+	helmChartGVR = schema.GroupVersionResource{
+		Group:    "helm.cattle.io",
+		Version:  "v1",
+		Resource: "helmcharts",
+	}
+	rancherSettingGVR = schema.GroupVersionResource{
+		Group:    "management.cattle.io",
+		Version:  "v3",
+		Resource: "settings",
+	}
+)
 
 type Data struct {
 	AppVersion     string                 `json:"appVersion"`
@@ -123,8 +132,12 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 			node.Status.NodeInfo.Architecture != arch {
 			nodeInfoConsistent = false
 		}
-		if selinuxInfo == "" {
-			selinuxInfo = getSELinuxStatus(&node)
+		switch s := getSELinuxStatus(&node); {
+		case s == "", s == selinuxInfo:
+		case selinuxInfo == "":
+			selinuxInfo = s
+		default:
+			selinuxInfo = "mixed"
 		}
 		for _, res := range gpuResources {
 			if qty, ok := node.Status.Allocatable[res]; ok {
@@ -173,37 +186,40 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 		"gpuNodeCount": gpuNodeCount,
 	}).Debug("collected nodes")
 
-	logrus.Debug("collecting kube-system workloads")
-	kubeSystemDS, err := clientset.AppsV1().DaemonSets("kube-system").List(ctx, metav1.ListOptions{})
+	logrus.Debug("collecting workloads")
+	kubeSystemDeploy, err := clientset.AppsV1().Deployments(metav1.NamespaceSystem).List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("failed to list kube-system daemonsets: %w", err)
+		logrus.WithError(err).Warn("failed to list kube-system deployments")
+		kubeSystemDeploy = &appsv1.DeploymentList{}
 	}
-	kubeSystemDeploy, err := clientset.AppsV1().Deployments("kube-system").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list kube-system deployments: %w", err)
+	daemonSets, dsErr := clientset.AppsV1().DaemonSets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	if dsErr != nil {
+		logrus.WithError(dsErr).Warn("failed to list daemonsets")
+		daemonSets = &appsv1.DaemonSetList{}
 	}
 
 	logrus.Debug("detecting CNI plugin")
-	cniPlugin, cniVersion := detectCNIPlugin(kubeSystemDS.Items)
+	cniPlugin, cniVersion := detectCNIPlugin(daemonSets.Items)
 	data.ExtraTagInfo["cni-plugin"] = cniPlugin
 	data.ExtraTagInfo["cni-version"] = cniVersion
 	logrus.WithFields(logrus.Fields{"plugin": cniPlugin, "version": cniVersion}).Debug("detected CNI")
 
 	logrus.Debug("detecting ingress controller")
-	ingressController, ingressVersion := detectIngressController(kubeSystemDeploy.Items, kubeSystemDS.Items)
+	ingressController, ingressVersion := detectIngressController(ctx, clientset, kubeSystemDeploy.Items, daemonSets.Items)
 	data.ExtraTagInfo["ingress-controller"] = ingressController
 	data.ExtraTagInfo["ingress-version"] = ingressVersion
 	logrus.WithFields(logrus.Fields{"controller": ingressController, "version": ingressVersion}).Debug("detected ingress")
 
 	logrus.Debug("detecting GPU operator")
-	gpuOperator, gpuOperatorVersion := detectGPUOperator(ctx, clientset)
+	gpuOperator, gpuOperatorVersion := detectGPUOperator(daemonSets.Items, dsErr)
 	data.ExtraTagInfo["gpu-operator"] = gpuOperator
 	data.ExtraTagInfo["gpu-operator-version"] = gpuOperatorVersion
 	logrus.WithFields(logrus.Fields{"operator": gpuOperator, "version": gpuOperatorVersion}).Debug("detected GPU operator")
 
 	logrus.Debug("detecting Rancher Manager")
-	rancherManaged, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset)
-	data.ExtraTagInfo["rancher-managed"] = strconv.FormatBool(rancherManaged)
+	rancherRole, rancherVersion, rancherInstallUUID := detectRancherManager(ctx, clientset, dynClient)
+	data.ExtraTagInfo["rancher-managed"] = cmp.Or(map[string]string{"none": "false", "unknown": "unknown"}[rancherRole], "true")
+	data.ExtraTagInfo["rancher-role"] = rancherRole
 	if isMinimal {
 		data.ExtraTagInfo["rancher-version"] = "redacted"
 		data.ExtraFieldInfo["rancher-install-uuid"] = ""
@@ -213,7 +229,7 @@ func Collect(ctx context.Context, clientset kubernetes.Interface, dynClient dyna
 			data.ExtraFieldInfo["rancher-install-uuid"] = rancherInstallUUID
 		}
 	}
-	logrus.WithFields(logrus.Fields{"managed": rancherManaged, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
+	logrus.WithFields(logrus.Fields{"role": rancherRole, "version": rancherVersion, "installUUID": rancherInstallUUID}).Debug("detected Rancher")
 
 	logrus.Debug("detecting Prime distribution flag")
 	prime, sysDefaultRegistry := detectPrime(ctx, dynClient)
@@ -311,17 +327,42 @@ func isControlPlaneNode(node *corev1.Node) bool {
 	return hasControlPlaneLabel || hasMasterLabel
 }
 
-// getSELinuxStatus determines SELinux status from node labels.
-// SELinux detection is limited from within containers; this is a best-effort
-// approach. Returns "unknown" if not determinable.
+// getSELinuxStatus reports the RKE2 selinux option of a node, which enables
+// SELinux support in containerd. RKE2 records the node arguments, including
+// config file values, in the node-args annotation, and its RKE2_* environment
+// variables in the node-env annotation. An argument overrides the variable.
+// RKE2 splits "--selinux=false" into two elements, so a boolean element after
+// the flag is its value. Windows nodes and nodes without the node-args
+// annotation return "".
 func getSELinuxStatus(node *corev1.Node) string {
-	if selinux, ok := node.Labels["security.alpha.kubernetes.io/selinux"]; ok {
-		if selinux == "enabled" {
-			return "enabled"
-		}
-		return "disabled"
+	var args []string
+	if node.Status.NodeInfo.OperatingSystem == "windows" ||
+		json.Unmarshal([]byte(node.Annotations["rke2.io/node-args"]), &args) != nil {
+		return ""
 	}
-	return "unknown"
+	var env map[string]string
+	_ = json.Unmarshal([]byte(node.Annotations["rke2.io/node-env"]), &env)
+	enabled, _ := strconv.ParseBool(env["RKE2_SELINUX"])
+	for i, arg := range args {
+		if !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		name, value, hasValue := strings.Cut(strings.TrimLeft(arg, "-"), "=")
+		if name != "selinux" {
+			continue
+		}
+		if !hasValue && i+1 < len(args) {
+			value = args[i+1]
+		}
+		enabled = true
+		if b, err := strconv.ParseBool(value); err == nil {
+			enabled = b
+		}
+	}
+	if enabled {
+		return "enabled"
+	}
+	return "disabled"
 }
 
 func parseCVEs(raw string) []string {
@@ -501,35 +542,44 @@ func logRecommendations(newer []Version, current *Version) {
 	}
 }
 
-func extractImageVersion(image string) string {
-	if idx := strings.LastIndex(image, ":"); idx != -1 {
-		tag := image[idx+1:]
-		if atIdx := strings.Index(tag, "@"); atIdx != -1 {
-			tag = tag[:atIdx]
-		}
-		return tag
+// splitImage splits an image reference into repository and tag, and drops a digest.
+func splitImage(image string) (repository, tag string) {
+	image, _, _ = strings.Cut(image, "@")
+	if idx := strings.LastIndex(image, ":"); idx > strings.LastIndex(image, "/") {
+		return image[:idx], image[idx+1:]
 	}
-	return ""
+	return image, ""
 }
 
-func detectCNIPlugin(daemonSets []appsv1.DaemonSet) (string, string) {
-	cniPatterns := map[string]string{
-		"canal":   "canal",
-		"flannel": "flannel",
-		"calico":  "calico",
-		"cilium":  "cilium",
-		"weave":   "weave",
-	}
+func extractImageVersion(image string) string {
+	_, tag := splitImage(image)
+	return tag
+}
 
-	for _, ds := range daemonSets {
-		name := strings.ToLower(ds.Name)
-		for pattern, cniName := range cniPatterns {
-			if strings.Contains(name, pattern) {
-				version := ""
-				if len(ds.Spec.Template.Spec.Containers) > 0 {
-					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
+func firstImageVersion(containers []corev1.Container) string {
+	if len(containers) == 0 {
+		return ""
+	}
+	return extractImageVersion(containers[0].Image)
+}
+
+// detectCNIPlugin matches DaemonSet names in kube-system first, where RKE2
+// deploys its CNI, and then in all other namespaces, because some CNIs do not
+// run in kube-system. For example, the Tigera operator of rke2-calico runs
+// calico-node in calico-system.
+func detectCNIPlugin(daemonSets []appsv1.DaemonSet) (string, string) {
+	cniNames := []string{"canal", "flannel", "calico", "cilium", "antrea", "kube-ovn", "kube-router", "weave"}
+
+	for _, kubeSystem := range []bool{true, false} {
+		for _, ds := range daemonSets {
+			if (ds.Namespace == metav1.NamespaceSystem) != kubeSystem {
+				continue
+			}
+			name := strings.ToLower(ds.Name)
+			for _, cniName := range cniNames {
+				if strings.Contains(name, cniName) {
+					return cniName, firstImageVersion(ds.Spec.Template.Spec.Containers)
 				}
-				return cniName, version
 			}
 		}
 	}
@@ -537,95 +587,160 @@ func detectCNIPlugin(daemonSets []appsv1.DaemonSet) (string, string) {
 	return "unknown", ""
 }
 
-func detectIngressController(deployments []appsv1.Deployment, daemonSets []appsv1.DaemonSet) (string, string) {
-	for _, deploy := range deployments {
-		name := strings.ToLower(deploy.Name)
-		var ingressName string
-		switch {
-		case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
-			ingressName = "rke2-ingress-nginx"
-		case strings.Contains(name, "traefik"):
-			ingressName = "traefik"
-		}
-		if ingressName != "" {
-			version := ""
-			if len(deploy.Spec.Template.Spec.Containers) > 0 {
-				version = extractImageVersion(deploy.Spec.Template.Spec.Containers[0].Image)
-			}
-			return ingressName, version
-		}
-	}
-
-	for _, ds := range daemonSets {
-		name := strings.ToLower(ds.Name)
-		var ingressName string
-		switch {
-		case strings.Contains(name, "nginx-ingress"), strings.Contains(name, "rke2-ingress-nginx"):
-			ingressName = "rke2-ingress-nginx"
-		case strings.Contains(name, "traefik"):
-			ingressName = "traefik"
-		}
-		if ingressName != "" {
-			version := ""
-			if len(ds.Spec.Template.Spec.Containers) > 0 {
-				version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
-			}
-			return ingressName, version
-		}
-	}
-
-	return "none", "none"
+// ingressControllers maps IngressClass controller prefixes to reported names.
+var ingressControllers = []struct{ prefix, name string }{
+	{"k8s.io/ingress-nginx", "ingress-nginx"},
+	{"k8s.io/ingress-gce", "gce"},
+	{"traefik.io/", "traefik"},
+	{"nginx.org/", "f5-nginx"},
+	{"haproxy.org/", "haproxy"},
+	{"haproxy-ingress.github.io/", "haproxy-ingress"},
+	{"ingress-controllers.konghq.com/", "kong"},
+	{"projectcontour.io/", "contour"},
+	{"cilium.io/", "cilium"},
+	{"istio.io/", "istio"},
+	{"ingress.k8s.aws/", "aws-alb"},
+	{"azure/application-gateway", "azure-application-gateway"},
+	{"apisix.apache.org/", "apisix"},
+	{"pomerium.io/", "pomerium"},
 }
 
-func detectGPUOperator(ctx context.Context, clientset kubernetes.Interface) (string, string) {
+// detectIngressController reports the ingress controller of the kube-system
+// Deployments and DaemonSets, and otherwise the controller of the
+// IngressClasses. The names of the bundled nginx workloads start with the
+// RKE2 chart name rke2-ingress-nginx. Other nginx controllers in kube-system,
+// for example F5 NGINX, are reported by their IngressClass.
+func detectIngressController(ctx context.Context, clientset kubernetes.Interface, deployments []appsv1.Deployment, daemonSets []appsv1.DaemonSet) (string, string) {
+	type workload struct {
+		name       string
+		containers []corev1.Container
+	}
+	var workloads []workload
+	for _, deploy := range deployments {
+		workloads = append(workloads, workload{deploy.Name, deploy.Spec.Template.Spec.Containers})
+	}
+	for _, ds := range daemonSets {
+		if ds.Namespace == metav1.NamespaceSystem {
+			workloads = append(workloads, workload{ds.Name, ds.Spec.Template.Spec.Containers})
+		}
+	}
+
+	for _, w := range workloads {
+		name := strings.ToLower(w.name)
+		switch {
+		case strings.HasPrefix(name, "rke2-ingress-nginx"):
+			return "rke2-ingress-nginx", firstImageVersion(w.containers)
+		case strings.Contains(name, "traefik"):
+			return "traefik", firstImageVersion(w.containers)
+		}
+	}
+
+	return detectIngressClass(ctx, clientset)
+}
+
+// detectIngressClass reports the controller of the default IngressClass, or of
+// the first IngressClass with a known controller. The version is unknown.
+// Unknown controllers report as "other", so that custom names stay private.
+func detectIngressClass(ctx context.Context, clientset kubernetes.Interface) (string, string) {
+	classes, err := clientset.NetworkingV1().IngressClasses().List(ctx, metav1.ListOptions{})
+	if err != nil {
+		logrus.WithError(err).Warn("failed to list IngressClasses")
+		return "unknown", "unknown"
+	}
+	if len(classes.Items) == 0 {
+		return "none", "none"
+	}
+	controller := "other"
+	for i := range classes.Items {
+		name := "other"
+		for _, c := range ingressControllers {
+			if strings.HasPrefix(classes.Items[i].Spec.Controller, c.prefix) {
+				name = c.name
+				break
+			}
+		}
+		if classes.Items[i].Annotations[networkingv1.AnnotationIsDefaultIngressClass] == "true" {
+			return name, "unknown"
+		}
+		if controller == "other" {
+			controller = name
+		}
+	}
+	return controller, "unknown"
+}
+
+func detectGPUOperator(daemonSets []appsv1.DaemonSet, listErr error) (string, string) {
+	if listErr != nil {
+		return "unknown", "unknown"
+	}
 	gpuNamespaces := map[string]string{
 		"gpu-operator":              "nvidia-gpu-operator",
 		"kube-amd-gpu":              "amd-gpu-operator",
 		"inteldeviceplugins-system": "intel-device-plugins",
 	}
 
-	for ns, operator := range gpuNamespaces {
-		daemonSets, err := clientset.AppsV1().DaemonSets(ns).List(ctx, metav1.ListOptions{})
-		if err != nil {
-			continue
-		}
-		for _, ds := range daemonSets.Items {
-			name := strings.ToLower(ds.Name)
-			if strings.Contains(name, "device-plugin") || strings.Contains(name, "driver") {
-				version := ""
-				if len(ds.Spec.Template.Spec.Containers) > 0 {
-					version = extractImageVersion(ds.Spec.Template.Spec.Containers[0].Image)
-				}
-				return operator, version
-			}
+	for _, ds := range daemonSets {
+		operator, ok := gpuNamespaces[ds.Namespace]
+		name := strings.ToLower(ds.Name)
+		if ok && (strings.Contains(name, "device-plugin") || strings.Contains(name, "driver")) {
+			return operator, firstImageVersion(ds.Spec.Template.Spec.Containers)
 		}
 	}
 
 	return "none", "none"
 }
 
-func detectRancherManager(ctx context.Context, clientset kubernetes.Interface) (managed bool, version, installUUID string) {
-	_, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{})
+// detectRancherManager classifies the cluster by the Rancher images in
+// cattle-system. The role is "server" when the cluster runs Rancher Manager,
+// also if another Rancher Manager manages it (hosted Rancher). The role is
+// "downstream" when only cattle-cluster-agent connects the cluster to a
+// Rancher Manager. The role is "unknown" if the API read fails, or if
+// cattle-system contains neither image.
+func detectRancherManager(ctx context.Context, clientset kubernetes.Interface, dynClient dynamic.Interface) (role, version, installUUID string) {
+	if _, err := clientset.CoreV1().Namespaces().Get(ctx, "cattle-system", metav1.GetOptions{}); err != nil {
+		if apierrors.IsNotFound(err) {
+			return "none", "none", ""
+		}
+		logrus.WithError(err).Warn("failed to get the cattle-system namespace")
+		return "unknown", "", ""
+	}
+	deployments, err := clientset.AppsV1().Deployments("cattle-system").List(ctx, metav1.ListOptions{})
 	if err != nil {
-		return false, "none", ""
+		logrus.WithError(err).Warn("failed to list cattle-system deployments")
+		return "unknown", "", ""
 	}
 
-	deploy, err := clientset.AppsV1().Deployments("cattle-system").Get(ctx, "cattle-cluster-agent", metav1.GetOptions{})
-	if err != nil {
-		return true, "", ""
-	}
-
-	if len(deploy.Spec.Template.Spec.Containers) > 0 {
-		container := deploy.Spec.Template.Spec.Containers[0]
-		version = extractImageVersion(container.Image)
-		for _, env := range container.Env {
-			if env.Name == "CATTLE_INSTALL_UUID" && env.Value != "" {
-				installUUID = env.Value
-				break
+	role = "unknown"
+	for _, deploy := range deployments.Items {
+		for _, container := range deploy.Spec.Template.Spec.Containers {
+			repository, tag := splitImage(container.Image)
+			switch path.Base(repository) {
+			case "rancher":
+				return "server", tag, getRancherInstallUUID(ctx, dynClient)
+			case "rancher-agent":
+				env := map[string]string{}
+				for _, e := range container.Env {
+					env[e.Name] = e.Value
+				}
+				role, version, installUUID = "downstream", cmp.Or(env["CATTLE_SERVER_VERSION"], tag), env["CATTLE_INSTALL_UUID"]
 			}
 		}
 	}
-	return true, version, installUUID
+	return role, version, installUUID
+}
+
+// getRancherInstallUUID reads the install-uuid setting of the local Rancher Manager.
+func getRancherInstallUUID(ctx context.Context, dynClient dynamic.Interface) string {
+	if dynClient == nil {
+		return ""
+	}
+	setting, err := dynClient.Resource(rancherSettingGVR).Get(ctx, "install-uuid", metav1.GetOptions{})
+	if err != nil {
+		logrus.WithError(err).Debug("failed to read the Rancher install-uuid setting")
+		return ""
+	}
+	uuid, _, _ := unstructured.NestedString(setting.Object, "value")
+	return uuid
 }
 
 // detectIPStack determines the cluster's IP stack configuration from the kubernetes service.

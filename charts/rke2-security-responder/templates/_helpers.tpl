@@ -69,3 +69,15 @@ Return the proper image name with registry
 {{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
 {{- end -}}
 {{- end }}
+
+{{/*
+Return the CronJob schedule. Without an explicit schedule, the minute and the
+first hour derive from the kube-system namespace UID, so that clusters do not
+all report at the same time. Each cluster still reports once per 8-hour
+bucket, and before minute 55, so that a slow run stays in its bucket.
+*/}}
+{{- define "rke2-security-responder.schedule" -}}
+{{- $uid := dig "metadata" "uid" "" (lookup "v1" "Namespace" "" "kube-system") -}}
+{{- $seed := regexReplaceAll "[^0-9]" $uid "" | trunc 9 | atoi -}}
+{{- .Values.schedule | default (printf "%d %d-23/8 * * *" (mod $seed 55) (mod (div $seed 55) 8)) -}}
+{{- end }}

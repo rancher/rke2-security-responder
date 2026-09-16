@@ -6,7 +6,7 @@ metadata:
   labels:
     {{- include "rke2-security-responder.labels" . | nindent 4 }}
 spec:
-  schedule: {{ .Values.schedule | quote }}
+  schedule: {{ include "rke2-security-responder.schedule" . | quote }}
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 1
   concurrencyPolicy: Forbid

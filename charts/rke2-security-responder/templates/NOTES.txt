@@ -1,7 +1,7 @@
 RKE2 Security Responder has been installed!
 
 The security responder will run as a CronJob on the following schedule:
-  {{ .Values.schedule }}
+  {{ include "rke2-security-responder.schedule" . }}
 
 Configuration:
   - Endpoint: {{ .Values.check.endpoint }}

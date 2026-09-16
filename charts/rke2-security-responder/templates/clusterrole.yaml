@@ -17,6 +17,10 @@ rules:
   - apiGroups: ["apps"]
     resources: ["daemonsets", "deployments"]
     verbs: ["get", "list"]
+  # Need to list IngressClasses to detect ingress controllers that RKE2 does not bundle
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingressclasses"]
+    verbs: ["list"]
   # Need to read services to detect IP stack configuration (IPv4/IPv6/dual-stack)
   - apiGroups: [""]
     resources: ["services"]
@@ -25,3 +29,8 @@ rules:
   - apiGroups: ["helm.cattle.io"]
     resources: ["helmcharts"]
     verbs: ["get", "list"]
+  # Need to read the Rancher install UUID on a cluster that runs Rancher Manager
+  - apiGroups: ["management.cattle.io"]
+    resources: ["settings"]
+    resourceNames: ["install-uuid"]
+    verbs: ["get"]

@@ -24,8 +24,10 @@ image:
   tag: v0.1.5
   pullPolicy: IfNotPresent
 
-# CronJob schedule - runs thrice daily (every 8 hours)
-schedule: "0 */8 * * *"
+# CronJob schedule, in the time zone of kube-controller-manager. Empty runs
+# every 8 hours, at a minute and hour offset that derive from the cluster UID,
+# to spread the load on the endpoint.
+schedule: ""
 
 # Security check endpoint configuration
 check:
