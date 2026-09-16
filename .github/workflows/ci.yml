@@ -92,7 +92,6 @@ jobs:
       run: |
         docker buildx build \
           --platform linux/${{ matrix.arch }} \
-          --build-arg BUILDARCH=${{ matrix.arch }} \
           --build-arg TAG=test \
           --load \
           -t rke2-security-responder:test-${{ matrix.arch }} \
@@ -101,6 +100,18 @@ jobs:
     - name: Check image size
       run: |
         docker images rke2-security-responder:test-${{ matrix.arch }} --format "{{.Repository}}:{{.Tag}} - {{.Size}}"
+    
+    - name: Verify the binary matches the image architecture
+      run: |
+        docker create --name check rke2-security-responder:test-${{ matrix.arch }}
+        docker cp check:/usr/local/bin/security-responder ./security-responder
+        docker rm check
+        machine=$(readelf -h ./security-responder | sed -n 's/^ *Machine: *//p')
+        echo "linux/${{ matrix.arch }} image contains: ${machine}"
+        case "${{ matrix.arch }}" in
+          amd64) test "${machine}" = "Advanced Micro Devices X86-64" ;;
+          arm64) test "${machine}" = "AArch64" ;;
+        esac
 
   security:
     name: Security Scan
@@ -119,7 +130,6 @@ jobs:
       run: |
         docker buildx build \
           --platform linux/amd64 \
-          --build-arg BUILDARCH=amd64 \
           --build-arg TAG=scan \
           --load \
           -t rke2-security-responder:scan \

@@ -47,7 +47,6 @@ helm-template:
 docker-build:
 	docker buildx build \
 		--platform linux/$(ARCH) \
-		--build-arg BUILDARCH=$(ARCH) \
 		--build-arg TAG=$(VERSION) \
 		--load \
 		-t $(DOCKER_REPO):$(VERSION)-$(ARCH) \

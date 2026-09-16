@@ -1,9 +1,9 @@
 # Build stage - using hardened build base similar to RKE2
 FROM rancher/hardened-build-base:v1.26.2b1 AS builder
 
-ARG BUILDARCH
+ARG TARGETARCH
 ARG TAG=dev
-ENV ARCH=${BUILDARCH:-amd64}
+ENV ARCH=${TARGETARCH:-amd64}
 
 RUN apk --no-cache add \
     bash \
