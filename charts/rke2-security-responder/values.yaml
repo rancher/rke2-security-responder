@@ -43,7 +43,8 @@ resources:
     memory: 64Mi
 
 # Node selector
-nodeSelector: {}
+nodeSelector:
+  kubernetes.io/os: linux
 
 # Tolerations
 tolerations: []
