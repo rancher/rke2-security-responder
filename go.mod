@@ -1,6 +1,6 @@
 module github.com/rancher/rke2-security-responder
 
-go 1.26.8
+go 1.26.9
 
 require (
 	github.com/Masterminds/semver/v3 v3.5.0
